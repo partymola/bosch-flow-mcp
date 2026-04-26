@@ -1,0 +1,6 @@
+{
+  "$schema": "https://glama.ai/mcp/schemas/server.json",
+  "maintainers": ["partymola"],
+  "name": "bosch-flow-mcp",
+  "description": "Provides access to Bosch eBike Flow (Smart System / BES3) data including battery health, charge cycle history, component registrations, service records, and live state-of-charge with local SQLite caching and trend analysis. Features OAuth (PKCE) authentication via the one-bike-app public client, incremental synchronization, optional EUDA Data Act API support, and battery degradation tracking over time."
+}
