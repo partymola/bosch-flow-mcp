@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bosch-flow-mcp"
+version = "0.1.0"
+description = "MCP server for the Bosch eBike Flow API with OAuth, local cache, and battery trend analysis."
+readme = "README.md"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+requires-python = ">=3.13"
+keywords = ["bosch", "ebike", "mcp", "model-context-protocol", "cycling", "battery"]
+authors = [
+    {name = "jjdelrio", email = "641373+partymola@users.noreply.github.com"},
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Home Automation",
+]
+dependencies = [
+    "mcp>=1.6.0",
+    "anyio>=4.0",
+]
+
+[project.scripts]
+bosch-flow-mcp = "bosch_flow_mcp.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/partymola/bosch-flow-mcp"
+Repository = "https://github.com/partymola/bosch-flow-mcp"
+"Bug Tracker" = "https://github.com/partymola/bosch-flow-mcp/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.5",
+    "pytest-asyncio>=0.25.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

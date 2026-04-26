@@ -1,0 +1,8 @@
+{
+  "_comment": "Optional: if you register your own app at the Bosch Data Act portal,",
+  "_comment2": "place your credentials here to access additional Data Act API endpoints",
+  "_comment3": "(capacity testers, service book, component registrations, etc.).",
+  "_comment4": "Without this file, auth uses the one-bike-app public client (no registration needed).",
+  "client_id": "euda-YOUR-UUID-HERE",
+  "client_secret": "YOUR-SECRET-HERE"
+}
