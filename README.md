@@ -31,10 +31,10 @@ interoperability.
 ## Features
 
 - Battery state snapshots over time (charge cycles, energy delivered, degradation trends)
-- Component registrations (drive unit, display, ConnectModule, battery)
-- Service book history and software update log
+- Components and firmware versions (drive unit, battery, ConnectModule, head unit, remote, ABS)
+- Service book history and software update log (EU Data Act client only)
 - Live state-of-charge from ConnectModule via mobile API
-- Battery capacity tester results
+- Battery capacity tester results (EU Data Act client only)
 - Auto-sync on demand - tools fetch fresh data without a cron job
 
 ## Requirements
@@ -110,10 +110,10 @@ Then ask Claude questions like:
 | `bosch_get_bike` | Single bike with full details |
 | `bosch_get_batteries` | Battery snapshots - latest or historical range |
 | `bosch_get_soc` | Live state-of-charge from ConnectModule |
-| `bosch_get_capacity` | Battery capacity tester results |
-| `bosch_get_components` | Component registrations and software versions |
-| `bosch_get_service_records` | Service book entries |
-| `bosch_get_software_updates` | Software update history |
+| `bosch_get_capacity` | Battery capacity tester results (EU Data Act client only) |
+| `bosch_get_components` | Components with part numbers and firmware versions |
+| `bosch_get_service_records` | Service book entries (EU Data Act client only) |
+| `bosch_get_software_updates` | Software update history (EU Data Act client only) |
 | `bosch_battery_trends` | Charge cycle and energy trends by period |
 
 ## API credits
