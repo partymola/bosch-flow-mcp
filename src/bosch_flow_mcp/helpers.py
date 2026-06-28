@@ -8,8 +8,8 @@ from typing import Any
 
 from .config import BOSCH_TOKENS_PATH
 
-
 # --- Response formatting ---
+
 
 def format_response(result: Any) -> str:
     """JSON-serialize a result for MCP transport."""
@@ -64,20 +64,23 @@ def _parse_single_date(date_str: str | None, default: date, is_end: bool) -> dat
     if re.match(r"^\d{4}-\d{2}-\d{2}$", date_str):
         return date.fromisoformat(date_str)
 
-    raise ValueError(
-        f"Invalid date '{date_str}'. Use YYYY-MM-DD, YYYY-MM, or Nd (e.g. '30d')."
-    )
+    raise ValueError(f"Invalid date '{date_str}'. Use YYYY-MM-DD, YYYY-MM, or Nd (e.g. '30d').")
 
 
 # --- Auth decorator ---
 
+
 def require_auth(func):
     """Decorator that checks EUDA tokens exist before calling a tool."""
+
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
         if not BOSCH_TOKENS_PATH.exists():
-            return json.dumps({
-                "error": "Bosch not configured. Run: bosch-flow-mcp auth",
-            })
+            return json.dumps(
+                {
+                    "error": "Bosch not configured. Run: bosch-flow-mcp auth",
+                }
+            )
         return await func(*args, **kwargs)
+
     return wrapper

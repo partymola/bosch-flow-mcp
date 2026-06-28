@@ -1,20 +1,23 @@
 """Sync tool: fetch data from Bosch APIs and store in local SQLite cache."""
 
-import json
 import logging
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 
 import anyio
 
-from ..mcp_instance import mcp
-from ..helpers import format_response, require_auth
 from .. import api, db
 from ..config import (
-    BES3_BIKES, BES3_BIKE, BES3_REGISTRATIONS, BES3_SERVICE_RECORDS,
-    BES3_SW_UPDATES, BES3_CAPACITY_TESTERS,
+    BES3_BIKE,
+    BES3_BIKES,
+    BES3_CAPACITY_TESTERS,
+    BES3_REGISTRATIONS,
+    BES3_SERVICE_RECORDS,
+    BES3_SW_UPDATES,
     DATA_ACT_API_BASE,
-    MOBILE_BIKE_PROFILE_V2, MOBILE_STATE_OF_CHARGE,
+    MOBILE_BIKE_PROFILE_V2,
 )
+from ..helpers import format_response, require_auth
+from ..mcp_instance import mcp
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +25,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Individual sync functions
 # ---------------------------------------------------------------------------
+
 
 def _sync_bikes(conn) -> int:
     """Fetch all bikes. Tries Data Act API first, falls back to mobile API."""
@@ -37,10 +41,7 @@ def _sync_bikes(conn) -> int:
     if isinstance(response, list):
         bikes = response
     elif isinstance(response, dict):
-        bikes = (
-            response.get("bikes", []) or
-            response.get("data", [])
-        )
+        bikes = response.get("bikes", []) or response.get("data", [])
         # v1 mobile API wraps in {"data": {"attributes": {"bikes": [...]}}}
         if not bikes:
             attrs = response.get("data", {})
@@ -59,12 +60,16 @@ def _sync_bikes(conn) -> int:
         if not bike_id:
             continue
         attrs = bike.get("attributes", bike)  # v1 has attributes wrapper, v2 is flat
-        db.save_bike(conn, bike_id, {
-            "name": attrs.get("name") or attrs.get("brandName", ""),
-            "brand_name": attrs.get("brandName"),
-            "frame_number": attrs.get("frameNumber"),
-            "raw": bike,
-        })
+        db.save_bike(
+            conn,
+            bike_id,
+            {
+                "name": attrs.get("name") or attrs.get("brandName", ""),
+                "brand_name": attrs.get("brandName"),
+                "frame_number": attrs.get("frameNumber"),
+                "raw": bike,
+            },
+        )
         count += 1
 
     conn.commit()
@@ -99,7 +104,9 @@ def _sync_batteries(conn) -> int:
             # Derive a stable battery_id from part/serial or product name
             serial = battery.get("serialNumber") or ""
             part = battery.get("partNumber") or ""
-            battery_id = f"{part}_{serial}" if (part or serial) else battery.get("productName", "battery")
+            battery_id = (
+                f"{part}_{serial}" if (part or serial) else battery.get("productName", "battery")
+            )
             battery["battery_id"] = battery_id
 
             db.save_battery_snapshot(conn, bike_id, battery, now)
@@ -128,9 +135,7 @@ def _sync_components(conn) -> int:
         components = reg.get("components", [])
         for comp in components:
             component_type = (
-                comp.get("componentType") or
-                comp.get("type") or
-                comp.get("productGroup", "unknown")
+                comp.get("componentType") or comp.get("type") or comp.get("productGroup", "unknown")
             )
             db.save_component(conn, bike_id, component_type, comp)
             count += 1
@@ -175,7 +180,9 @@ def _sync_software_updates(conn) -> int:
         response = api.get(path, base=DATA_ACT_API_BASE)
         if not response:
             continue
-        updates = response if isinstance(response, list) else response.get("installationReports", [])
+        updates = (
+            response if isinstance(response, list) else response.get("installationReports", [])
+        )
         if not updates and isinstance(response, dict):
             updates = response.get("data", [])
         for update in updates:
@@ -204,7 +211,10 @@ def _sync_capacity(conn) -> int:
             continue
         seen.add(key)
 
-        response = api.get(f"{BES3_CAPACITY_TESTERS}?partNumber={part}&serialNumber={serial}", base=DATA_ACT_API_BASE)
+        response = api.get(
+            f"{BES3_CAPACITY_TESTERS}?partNumber={part}&serialNumber={serial}",
+            base=DATA_ACT_API_BASE,
+        )
         if not response:
             continue
         tests = response if isinstance(response, list) else response.get("capacityTests", [])
@@ -284,6 +294,7 @@ def auto_sync_if_stale(data_type: str) -> None:
 # ---------------------------------------------------------------------------
 # MCP tool
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool()
 @require_auth

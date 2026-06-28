@@ -1,10 +1,11 @@
 """Tests for MCP tool output formatting."""
 
 import json
-import pytest
 from unittest.mock import patch
 
-from tests.conftest import FAKE_BIKE_ID, FAKE_BATTERY_ID
+import pytest
+
+from tests.conftest import FAKE_BIKE_ID
 
 
 @pytest.fixture(autouse=True)
@@ -13,7 +14,9 @@ def require_auth_bypass(monkeypatch, tmp_path):
     tokens_path = tmp_path / "tokens.json"
     tokens_path.write_text(json.dumps({"access_token": "fake", "expiry": 9999999999}))
     monkeypatch.setattr("bosch_flow_mcp.helpers.BOSCH_TOKENS_PATH", tokens_path)
-    monkeypatch.setattr("bosch_flow_mcp.tools.battery_tools.BOSCH_TOKENS_PATH", tokens_path, raising=False)
+    monkeypatch.setattr(
+        "bosch_flow_mcp.tools.battery_tools.BOSCH_TOKENS_PATH", tokens_path, raising=False
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -31,10 +34,13 @@ def patch_auto_sync():
 def patch_db_path(populated_db, tmp_path, monkeypatch):
     """Redirect db.get_db() to the populated test DB."""
     import bosch_flow_mcp.db as db_module
+
     original_get_db = db_module.get_db
 
     def _fake_get_db(db_path=None):
-        return original_get_db(db_path or populated_db.execute("PRAGMA database_list").fetchone()[2])
+        return original_get_db(
+            db_path or populated_db.execute("PRAGMA database_list").fetchone()[2]
+        )
 
     # Instead, patch get_db to return the already-open populated_db connection
     # We need a fresh connection to the same file each time
@@ -42,14 +48,25 @@ def patch_db_path(populated_db, tmp_path, monkeypatch):
     # Populate a fresh DB at db_file
     conn = db_module.get_db(db_file)
     # Copy data from populated_db
-    for table in ["bikes", "batteries", "components", "service_records",
-                   "software_updates", "capacity_tests", "sync_log"]:
+    for table in [
+        "bikes",
+        "batteries",
+        "components",
+        "service_records",
+        "software_updates",
+        "capacity_tests",
+        "sync_log",
+    ]:
         rows = populated_db.execute(f"SELECT * FROM {table}").fetchall()
         if rows:
-            cols = [d[0] for d in populated_db.execute(f"SELECT * FROM {table} LIMIT 0").description]
+            cols = [
+                d[0] for d in populated_db.execute(f"SELECT * FROM {table} LIMIT 0").description
+            ]
             placeholders = ",".join(["?"] * len(cols))
-            conn.executemany(f"INSERT OR IGNORE INTO {table} ({','.join(cols)}) VALUES ({placeholders})",
-                             [tuple(r) for r in rows])
+            conn.executemany(
+                f"INSERT OR IGNORE INTO {table} ({','.join(cols)}) VALUES ({placeholders})",
+                [tuple(r) for r in rows],
+            )
     conn.commit()
     conn.close()
 
@@ -59,6 +76,7 @@ def patch_db_path(populated_db, tmp_path, monkeypatch):
 
 async def test_bosch_get_bikes_returns_list():
     from bosch_flow_mcp.tools.bike_tools import bosch_get_bikes
+
     result = await bosch_get_bikes()
     data = json.loads(result)
     assert "bikes" in data
@@ -70,6 +88,7 @@ async def test_bosch_get_bikes_returns_list():
 
 async def test_bosch_get_bike_found():
     from bosch_flow_mcp.tools.bike_tools import bosch_get_bike
+
     result = await bosch_get_bike(FAKE_BIKE_ID)
     data = json.loads(result)
     assert data["bike_id"] == FAKE_BIKE_ID
@@ -77,6 +96,7 @@ async def test_bosch_get_bike_found():
 
 async def test_bosch_get_bike_not_found():
     from bosch_flow_mcp.tools.bike_tools import bosch_get_bike
+
     result = await bosch_get_bike("00000000-0000-0000-0000-999999999999")
     data = json.loads(result)
     assert "error" in data
@@ -84,6 +104,7 @@ async def test_bosch_get_bike_not_found():
 
 async def test_bosch_get_batteries_latest():
     from bosch_flow_mcp.tools.battery_tools import bosch_get_batteries
+
     result = await bosch_get_batteries(latest_only=True)
     data = json.loads(result)
     assert "batteries" in data
@@ -94,13 +115,17 @@ async def test_bosch_get_batteries_latest():
 
 async def test_bosch_get_batteries_history():
     from bosch_flow_mcp.tools.battery_tools import bosch_get_batteries
-    result = await bosch_get_batteries(latest_only=False, start_date="2026-03-01", end_date="2026-04-30")
+
+    result = await bosch_get_batteries(
+        latest_only=False, start_date="2026-03-01", end_date="2026-04-30"
+    )
     data = json.loads(result)
     assert data["count"] > 1  # Multiple snapshots over time
 
 
 async def test_bosch_get_components_all():
     from bosch_flow_mcp.tools.component_tools import bosch_get_components
+
     result = await bosch_get_components()
     data = json.loads(result)
     assert "components" in data
@@ -110,6 +135,7 @@ async def test_bosch_get_components_all():
 
 async def test_bosch_get_service_records():
     from bosch_flow_mcp.tools.service_tools import bosch_get_service_records
+
     result = await bosch_get_service_records()
     data = json.loads(result)
     assert "service_records" in data
@@ -119,6 +145,7 @@ async def test_bosch_get_service_records():
 
 async def test_bosch_get_software_updates():
     from bosch_flow_mcp.tools.service_tools import bosch_get_software_updates
+
     result = await bosch_get_software_updates()
     data = json.loads(result)
     assert "software_updates" in data
@@ -128,6 +155,7 @@ async def test_bosch_get_software_updates():
 
 async def test_bosch_get_capacity():
     from bosch_flow_mcp.tools.battery_tools import bosch_get_capacity
+
     result = await bosch_get_capacity()
     data = json.loads(result)
     assert "capacity_tests" in data

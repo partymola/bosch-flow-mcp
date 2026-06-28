@@ -27,8 +27,8 @@ from .config import (
     BOSCH_CONFIG_PATH,
     BOSCH_TOKEN_URL,
     BOSCH_TOKENS_PATH,
-    CONFIG_DIR,
     CLIENT_ID,
+    CONFIG_DIR,
     REDIRECT_URI,
     SCOPE,
 )
@@ -48,6 +48,7 @@ EUDA_REDIRECT_URI = f"http://localhost:{EUDA_CALLBACK_PORT}"
 # JSON helpers
 # ---------------------------------------------------------------------------
 
+
 def _save_json(path, data) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2))
@@ -61,6 +62,7 @@ def _load_json(path) -> dict:
 # ---------------------------------------------------------------------------
 # Client detection
 # ---------------------------------------------------------------------------
+
 
 def _get_client_id() -> str:
     """Return the client_id to use for auth. EUDA config takes priority."""
@@ -84,18 +86,20 @@ def _is_euda() -> bool:
 # PKCE
 # ---------------------------------------------------------------------------
 
+
 def _generate_pkce() -> tuple[str, str]:
     """Return (code_verifier, code_challenge) for PKCE S256."""
     verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode().rstrip("=")
-    challenge = base64.urlsafe_b64encode(
-        hashlib.sha256(verifier.encode()).digest()
-    ).decode().rstrip("=")
+    challenge = (
+        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+    )
     return verifier, challenge
 
 
 # ---------------------------------------------------------------------------
 # Token refresh
 # ---------------------------------------------------------------------------
+
 
 def refresh_token() -> str:
     """Return a valid access token, refreshing if expired (5-min buffer).
@@ -121,11 +125,13 @@ def refresh_token() -> str:
         client_id = _tokens.get("client_id", _get_client_id())
 
         # Public client refresh - no client_secret needed
-        data = urlencode({
-            "grant_type": "refresh_token",
-            "client_id": client_id,
-            "refresh_token": _tokens["refresh_token"],
-        }).encode()
+        data = urlencode(
+            {
+                "grant_type": "refresh_token",
+                "client_id": client_id,
+                "refresh_token": _tokens["refresh_token"],
+            }
+        ).encode()
 
         req = urllib.request.Request(BOSCH_TOKEN_URL, data=data, method="POST")
         try:
@@ -156,6 +162,7 @@ def invalidate_token_cache() -> None:
 # Interactive auth setup
 # ---------------------------------------------------------------------------
 
+
 def setup_auth() -> None:
     """Interactive OAuth setup. Auto-detects EUDA vs one-bike-app.
 
@@ -177,15 +184,21 @@ def _setup_euda_auth() -> None:
     verifier, challenge = _generate_pkce()
     state = secrets.token_urlsafe(16)
 
-    auth_url = BOSCH_AUTH_URL + "?" + urlencode({
-        "client_id": client_id,
-        "redirect_uri": EUDA_REDIRECT_URI,
-        "response_type": "code",
-        "scope": SCOPE,
-        "code_challenge": challenge,
-        "code_challenge_method": "S256",
-        "state": state,
-    })
+    auth_url = (
+        BOSCH_AUTH_URL
+        + "?"
+        + urlencode(
+            {
+                "client_id": client_id,
+                "redirect_uri": EUDA_REDIRECT_URI,
+                "response_type": "code",
+                "scope": SCOPE,
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+                "state": state,
+            }
+        )
+    )
 
     auth_code: list[str] = []
 
@@ -229,18 +242,24 @@ def _setup_mobile_auth() -> None:
     state = secrets.token_urlsafe(16)
     nonce = secrets.token_urlsafe(16)
 
-    auth_url = BOSCH_AUTH_URL + "?" + urlencode({
-        "client_id": CLIENT_ID,
-        "redirect_uri": REDIRECT_URI,
-        "response_type": "code",
-        "scope": SCOPE,
-        "code_challenge": challenge,
-        "code_challenge_method": "S256",
-        "kc_idp_hint": "skid",
-        "prompt": "login",
-        "nonce": nonce,
-        "state": state,
-    })
+    auth_url = (
+        BOSCH_AUTH_URL
+        + "?"
+        + urlencode(
+            {
+                "client_id": CLIENT_ID,
+                "redirect_uri": REDIRECT_URI,
+                "response_type": "code",
+                "scope": SCOPE,
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+                "kc_idp_hint": "skid",
+                "prompt": "login",
+                "nonce": nonce,
+                "state": state,
+            }
+        )
+    )
 
     print("\nBosch eBike Flow auth (one-bike-app)")
     print("=" * 50)
@@ -267,16 +286,20 @@ def _setup_mobile_auth() -> None:
 
 def _exchange_code(client_id: str, code: str, verifier: str, redirect_uri: str) -> None:
     """Exchange auth code for tokens and save them."""
-    data = urlencode({
-        "grant_type": "authorization_code",
-        "client_id": client_id,
-        "code": code,
-        "code_verifier": verifier,
-        "redirect_uri": redirect_uri,
-    }).encode()
+    data = urlencode(
+        {
+            "grant_type": "authorization_code",
+            "client_id": client_id,
+            "code": code,
+            "code_verifier": verifier,
+            "redirect_uri": redirect_uri,
+        }
+    ).encode()
 
     req = urllib.request.Request(
-        BOSCH_TOKEN_URL, data=data, method="POST",
+        BOSCH_TOKEN_URL,
+        data=data,
+        method="POST",
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
     try:

@@ -17,7 +17,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 
-from .mcp_instance import mcp
+from .mcp_instance import mcp  # noqa: E402
 
 
 def main() -> None:
@@ -25,13 +25,14 @@ def main() -> None:
     if len(sys.argv) == 1:
         # Import tools to register @mcp.tool() decorators
         from .tools import (  # noqa: F401
-            sync_tools,
-            bike_tools,
+            analysis_tools,
             battery_tools,
+            bike_tools,
             component_tools,
             service_tools,
-            analysis_tools,
+            sync_tools,
         )
+
         mcp.run(transport="stdio")
         return
 
@@ -47,22 +48,26 @@ def main() -> None:
     # sync subcommand
     sync_parser = subparsers.add_parser("sync", help="Sync data to local cache")
     sync_parser.add_argument(
-        "--types", default="all",
+        "--types",
+        default="all",
         help="Comma-separated data types: all, bikes, batteries, components, service, "
-             "software_updates, capacity. Default: all",
+        "software_updates, capacity. Default: all",
     )
 
     args = parser.parse_args()
 
     if args.cmd == "auth":
         from .auth import setup_auth
+
         setup_auth()
 
     elif args.cmd == "sync":
         from .tools.sync_tools import run_sync
+
         types = [t.strip() for t in args.types.split(",")]
         if "all" in types:
             from .tools.sync_tools import _ALL_TYPES
+
             types = _ALL_TYPES
         print(f"Syncing: {', '.join(types)}")
         results = run_sync(types)

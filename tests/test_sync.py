@@ -1,12 +1,9 @@
 """Tests for sync orchestration."""
 
-import json
-import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-from bosch_flow_mcp.tools.sync_tools import run_sync, auto_sync_if_stale
+from bosch_flow_mcp.tools.sync_tools import auto_sync_if_stale, run_sync
 from tests.conftest import FAKE_BIKE_ID
-
 
 # Fake API responses using fictional data
 FAKE_BIKES_RESPONSE = {
@@ -64,8 +61,14 @@ def _mock_api_get(path, base=None, retries=3):
     """Intercept api.get calls with fake responses."""
     # Mobile API: /v1/bike-profile returns bike list
     if path == "/v1/bike-profile":
-        return [{"id": FAKE_BIKE_ID, "brandName": "TestBrand",
-                 "frameNumber": "TESTFRAME001", "name": "My Test Bike"}]
+        return [
+            {
+                "id": FAKE_BIKE_ID,
+                "brandName": "TestBrand",
+                "frameNumber": "TESTFRAME001",
+                "name": "My Test Bike",
+            }
+        ]
     # Mobile API v2: /v2/bike-profile/{bike_id}
     if "/v2/bike-profile/" in path and FAKE_BIKE_ID in path:
         return FAKE_BIKE_DETAIL_RESPONSE
@@ -87,8 +90,10 @@ def _mock_api_get(path, base=None, retries=3):
 
 def test_run_sync_bikes(tmp_path):
     """Syncing bikes fetches and stores bike data."""
-    import bosch_flow_mcp.db as db_module
     import os
+
+    import bosch_flow_mcp.db as db_module
+
     os.environ["BOSCH_FLOW_MCP_DB_PATH"] = str(tmp_path / "test.db")
 
     with patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=_mock_api_get):
@@ -106,8 +111,8 @@ def test_run_sync_bikes(tmp_path):
 
 def test_run_sync_batteries(tmp_path):
     """Syncing batteries creates snapshots for each bike's battery."""
-    import bosch_flow_mcp.db as db_module
     import os
+
     os.environ["BOSCH_FLOW_MCP_DB_PATH"] = str(tmp_path / "test.db")
 
     with patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=_mock_api_get):
@@ -125,6 +130,7 @@ def test_run_sync_unknown_type():
 def test_auto_sync_if_stale_skips_if_synced_today(tmp_path, monkeypatch):
     """auto_sync_if_stale does not call run_sync if already synced today."""
     import bosch_flow_mcp.db as db_module
+
     db_path = tmp_path / "test.db"
     monkeypatch.setenv("BOSCH_FLOW_MCP_DB_PATH", str(db_path))
     conn = db_module.get_db(db_path)
@@ -138,7 +144,6 @@ def test_auto_sync_if_stale_skips_if_synced_today(tmp_path, monkeypatch):
 
 def test_auto_sync_if_stale_syncs_if_never_synced(tmp_path, monkeypatch):
     """auto_sync_if_stale calls run_sync if data type has never been synced."""
-    import os
     db_path = tmp_path / "test.db"
     monkeypatch.setenv("BOSCH_FLOW_MCP_DB_PATH", str(db_path))
 

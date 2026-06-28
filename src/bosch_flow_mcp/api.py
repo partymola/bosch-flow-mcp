@@ -48,10 +48,13 @@ def get(path: str, base: str = MOBILE_API_BASE, retries: int = 3) -> dict | list
             raise BoschAuthError(str(e)) from e
 
         url = f"{base}{path}"
-        req = urllib.request.Request(url, headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/json",
-        })
+        req = urllib.request.Request(
+            url,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+            },
+        )
 
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:

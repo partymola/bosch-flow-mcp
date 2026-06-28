@@ -6,7 +6,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .config import DB_PATH, _PACKAGE_ROOT
+from .config import DB_PATH
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS bikes (
@@ -128,10 +128,12 @@ def get_db(db_path: Path | str | None = None) -> sqlite3.Connection:
 # Save helpers
 # ---------------------------------------------------------------------------
 
+
 def save_bike(conn: sqlite3.Connection, bike_id: str, row: dict) -> None:
     now = datetime.now(timezone.utc).isoformat()
     conn.execute(
-        """INSERT OR REPLACE INTO bikes (bike_id, name, brand_name, frame_number, raw_json, updated_at)
+        """INSERT OR REPLACE INTO bikes
+        (bike_id, name, brand_name, frame_number, raw_json, updated_at)
         VALUES (:bike_id, :name, :brand_name, :frame_number, :raw_json, :updated_at)""",
         {
             "bike_id": bike_id,
@@ -144,8 +146,9 @@ def save_bike(conn: sqlite3.Connection, bike_id: str, row: dict) -> None:
     )
 
 
-def save_battery_snapshot(conn: sqlite3.Connection, bike_id: str, battery: dict,
-                           captured_at: str) -> None:
+def save_battery_snapshot(
+    conn: sqlite3.Connection, bike_id: str, battery: dict, captured_at: str
+) -> None:
     cycles = battery.get("numberOfFullChargeCycles") or {}
     conn.execute(
         """INSERT OR IGNORE INTO batteries
@@ -170,8 +173,9 @@ def save_battery_snapshot(conn: sqlite3.Connection, bike_id: str, battery: dict,
     )
 
 
-def save_capacity_test(conn: sqlite3.Connection, part_number: str, serial_number: str,
-                        test_date: str | None, raw: dict) -> None:
+def save_capacity_test(
+    conn: sqlite3.Connection, part_number: str, serial_number: str, test_date: str | None, raw: dict
+) -> None:
     conn.execute(
         """INSERT OR IGNORE INTO capacity_tests (part_number, serial_number, test_date, raw_json)
         VALUES (?, ?, ?, ?)""",
@@ -179,8 +183,7 @@ def save_capacity_test(conn: sqlite3.Connection, part_number: str, serial_number
     )
 
 
-def save_component(conn: sqlite3.Connection, bike_id: str, component_type: str,
-                    row: dict) -> None:
+def save_component(conn: sqlite3.Connection, bike_id: str, component_type: str, row: dict) -> None:
     now = datetime.now(timezone.utc).isoformat()
     conn.execute(
         """INSERT OR REPLACE INTO components
@@ -251,8 +254,9 @@ def save_soc_snapshot(conn: sqlite3.Connection, bike_id: str, soc: dict) -> None
     )
 
 
-def log_sync(conn: sqlite3.Connection, data_type: str, status: str,
-             records_added: int = 0, notes: str = "") -> None:
+def log_sync(
+    conn: sqlite3.Connection, data_type: str, status: str, records_added: int = 0, notes: str = ""
+) -> None:
     conn.execute(
         """INSERT INTO sync_log (synced_at, data_type, status, records_added, notes)
         VALUES (?, ?, ?, ?, ?)""",
@@ -264,6 +268,7 @@ def log_sync(conn: sqlite3.Connection, data_type: str, status: str,
 # ---------------------------------------------------------------------------
 # Sync log helpers
 # ---------------------------------------------------------------------------
+
 
 def get_last_sync_time(conn: sqlite3.Connection, data_type: str) -> datetime | None:
     """Return timestamp of most recent successful sync for a data type."""
@@ -279,6 +284,7 @@ def get_last_sync_time(conn: sqlite3.Connection, data_type: str) -> datetime | N
 # ---------------------------------------------------------------------------
 # Query helpers
 # ---------------------------------------------------------------------------
+
 
 def _rows_to_dicts(rows) -> list[dict]:
     result = []
@@ -304,8 +310,9 @@ def query_bike(conn: sqlite3.Connection, bike_id: str) -> dict | None:
     return dict(row) if row else None
 
 
-def query_batteries(conn: sqlite3.Connection, bike_id: str | None,
-                     start_date: str, end_date: str) -> list[dict]:
+def query_batteries(
+    conn: sqlite3.Connection, bike_id: str | None, start_date: str, end_date: str
+) -> list[dict]:
     if bike_id:
         rows = conn.execute(
             """SELECT * FROM batteries WHERE bike_id = ?
@@ -347,8 +354,9 @@ def query_battery_latest(conn: sqlite3.Connection, bike_id: str | None) -> list[
     return _rows_to_dicts(rows)
 
 
-def query_components(conn: sqlite3.Connection, bike_id: str | None,
-                      component_type: str | None) -> list[dict]:
+def query_components(
+    conn: sqlite3.Connection, bike_id: str | None, component_type: str | None
+) -> list[dict]:
     params: list = []
     where: list[str] = []
     if bike_id:
@@ -365,8 +373,9 @@ def query_components(conn: sqlite3.Connection, bike_id: str | None,
     return _rows_to_dicts(rows)
 
 
-def query_service_records(conn: sqlite3.Connection, bike_id: str | None,
-                           start_date: str | None, end_date: str | None) -> list[dict]:
+def query_service_records(
+    conn: sqlite3.Connection, bike_id: str | None, start_date: str | None, end_date: str | None
+) -> list[dict]:
     params: list = []
     where: list[str] = []
     if bike_id:
@@ -386,8 +395,9 @@ def query_service_records(conn: sqlite3.Connection, bike_id: str | None,
     return _rows_to_dicts(rows)
 
 
-def query_software_updates(conn: sqlite3.Connection, bike_id: str | None,
-                            start_date: str | None, end_date: str | None) -> list[dict]:
+def query_software_updates(
+    conn: sqlite3.Connection, bike_id: str | None, start_date: str | None, end_date: str | None
+) -> list[dict]:
     params: list = []
     where: list[str] = []
     if bike_id:
@@ -407,8 +417,9 @@ def query_software_updates(conn: sqlite3.Connection, bike_id: str | None,
     return _rows_to_dicts(rows)
 
 
-def query_capacity_tests(conn: sqlite3.Connection,
-                          part_number: str | None, serial_number: str | None) -> list[dict]:
+def query_capacity_tests(
+    conn: sqlite3.Connection, part_number: str | None, serial_number: str | None
+) -> list[dict]:
     params: list = []
     where: list[str] = []
     if part_number:
@@ -425,8 +436,9 @@ def query_capacity_tests(conn: sqlite3.Connection,
     return _rows_to_dicts(rows)
 
 
-def query_soc_snapshots(conn: sqlite3.Connection, bike_id: str,
-                         start_date: str, end_date: str) -> list[dict]:
+def query_soc_snapshots(
+    conn: sqlite3.Connection, bike_id: str, start_date: str, end_date: str
+) -> list[dict]:
     rows = conn.execute(
         """SELECT * FROM soc_snapshots
         WHERE bike_id = ? AND captured_at >= ? AND captured_at <= ?

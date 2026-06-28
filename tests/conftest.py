@@ -5,12 +5,10 @@ frame numbers, or personal information.
 """
 
 import json
+
 import pytest
-import sqlite3
-from datetime import datetime, timezone
 
 from bosch_flow_mcp import db
-
 
 # Fictional test data - no real values
 FAKE_BIKE_ID = "00000000-0000-0000-0000-000000000001"
@@ -38,20 +36,23 @@ def populated_db(tmp_db):
 
     # Insert a fake bike
     conn.execute(
-        """INSERT OR REPLACE INTO bikes (bike_id, name, brand_name, frame_number, raw_json, updated_at)
+        """INSERT OR REPLACE INTO bikes
+        (bike_id, name, brand_name, frame_number, raw_json, updated_at)
         VALUES (?, ?, ?, ?, ?, ?)""",
         (FAKE_BIKE_ID, "Test Bike", "TestBrand", FAKE_FRAME_NUMBER, json.dumps({}), now),
     )
 
     # Insert battery snapshots across multiple dates (time series)
-    for i, (captured_at, level, cycles) in enumerate([
-        ("2026-03-01T08:00:00+00:00", 85, 10),
-        ("2026-03-08T08:00:00+00:00", 80, 11),
-        ("2026-03-15T08:00:00+00:00", 78, 12),
-        ("2026-03-22T08:00:00+00:00", 82, 13),
-        ("2026-04-01T08:00:00+00:00", 75, 14),
-        ("2026-04-07T08:00:00+00:00", 90, 15),
-    ]):
+    for i, (captured_at, level, cycles) in enumerate(
+        [
+            ("2026-03-01T08:00:00+00:00", 85, 10),
+            ("2026-03-08T08:00:00+00:00", 80, 11),
+            ("2026-03-15T08:00:00+00:00", 78, 12),
+            ("2026-03-22T08:00:00+00:00", 82, 13),
+            ("2026-04-01T08:00:00+00:00", 75, 14),
+            ("2026-04-07T08:00:00+00:00", 90, 15),
+        ]
+    ):
         conn.execute(
             """INSERT OR IGNORE INTO batteries
             (bike_id, battery_id, battery_level, remaining_energy_wh, total_energy_wh,
@@ -59,10 +60,17 @@ def populated_db(tmp_db):
              delivered_wh_lifetime, software_version, captured_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                FAKE_BIKE_ID, FAKE_BATTERY_ID,
-                level, round(500 * level / 100), 625,
-                0, cycles, cycles - 1, 1,
-                round(cycles * 500.0), "1.2.3",
+                FAKE_BIKE_ID,
+                FAKE_BATTERY_ID,
+                level,
+                round(500 * level / 100),
+                625,
+                0,
+                cycles,
+                cycles - 1,
+                1,
+                round(cycles * 500.0),
+                "1.2.3",
                 captured_at,
             ),
         )
@@ -73,8 +81,16 @@ def populated_db(tmp_db):
         (bike_id, component_type, part_number, serial_number, product_name,
          software_version, raw_json, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (FAKE_BIKE_ID, "driveUnit", FAKE_PART_NUMBER, FAKE_SERIAL_NUMBER,
-         "Test Drive Unit CX", "4.5.6", json.dumps({}), now),
+        (
+            FAKE_BIKE_ID,
+            "driveUnit",
+            FAKE_PART_NUMBER,
+            FAKE_SERIAL_NUMBER,
+            "Test Drive Unit CX",
+            "4.5.6",
+            json.dumps({}),
+            now,
+        ),
     )
 
     # Insert a capacity test
@@ -86,7 +102,8 @@ def populated_db(tmp_db):
 
     # Insert a service record
     conn.execute(
-        """INSERT OR IGNORE INTO service_records (bike_id, record_id, service_date, description, raw_json)
+        """INSERT OR IGNORE INTO service_records
+        (bike_id, record_id, service_date, description, raw_json)
         VALUES (?, ?, ?, ?, ?)""",
         (FAKE_BIKE_ID, "SVC001", "2026-03-15", "Annual service", json.dumps({})),
     )

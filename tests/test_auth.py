@@ -1,9 +1,10 @@
 """Tests for auth token management."""
 
 import json
-import pytest
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 import bosch_flow_mcp.auth as auth_module
 from bosch_flow_mcp.config import CLIENT_ID
@@ -45,11 +46,13 @@ def test_refresh_token_refreshes_when_expired(tmp_path, monkeypatch):
         "expiry": past_expiry,
     }
 
-    fake_response_data = json.dumps({
-        "access_token": "new_token_def",
-        "refresh_token": "new_refresh",
-        "expires_in": 7200,
-    }).encode()
+    fake_response_data = json.dumps(
+        {
+            "access_token": "new_token_def",
+            "refresh_token": "new_refresh",
+            "expires_in": 7200,
+        }
+    ).encode()
 
     mock_resp = MagicMock()
     mock_resp.__enter__ = lambda s: s
@@ -57,11 +60,15 @@ def test_refresh_token_refreshes_when_expired(tmp_path, monkeypatch):
     mock_resp.read.return_value = fake_response_data
 
     tokens_path = tmp_path / "tokens.json"
-    tokens_path.write_text(json.dumps({
-        "access_token": "old_token",
-        "refresh_token": "valid_refresh",
-        "expiry": past_expiry,
-    }))
+    tokens_path.write_text(
+        json.dumps(
+            {
+                "access_token": "old_token",
+                "refresh_token": "valid_refresh",
+                "expiry": past_expiry,
+            }
+        )
+    )
     monkeypatch.setattr("bosch_flow_mcp.auth.BOSCH_TOKENS_PATH", tokens_path)
 
     with patch("urllib.request.urlopen", return_value=mock_resp):

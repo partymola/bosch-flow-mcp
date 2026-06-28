@@ -1,12 +1,13 @@
 """Tests for the Bosch API HTTP client."""
 
 import json
-import pytest
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError, URLError
 
+import pytest
+
 import bosch_flow_mcp.api as api_module
-from bosch_flow_mcp.api import BoschAuthError, BoschAPIError, BoschRateLimitError
+from bosch_flow_mcp.api import BoschAPIError, BoschAuthError, BoschRateLimitError
 
 
 @pytest.fixture(autouse=True)

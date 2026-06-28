@@ -2,10 +2,10 @@
 
 import anyio
 
-from ..mcp_instance import mcp
-from ..helpers import format_response, parse_date, require_auth
 from .. import api, db
 from ..config import MOBILE_STATE_OF_CHARGE
+from ..helpers import format_response, parse_date, require_auth
+from ..mcp_instance import mcp
 from .sync_tools import auto_sync_if_stale
 
 
@@ -67,18 +67,22 @@ async def bosch_get_soc(bike_id: str) -> str:
     try:
         soc = await anyio.to_thread.run_sync(lambda: api.get(path))
     except api.BoschAuthError as e:
-        return format_response({
-            "error": str(e),
-            "hint": "Run: bosch-flow-mcp auth",
-        })
+        return format_response(
+            {
+                "error": str(e),
+                "hint": "Run: bosch-flow-mcp auth",
+            }
+        )
     except api.BoschAPIError as e:
         return format_response({"error": str(e)})
 
     if soc is None:
-        return format_response({
-            "error": "State-of-charge not available.",
-            "hint": "Bike may be offline or ConnectModule not installed.",
-        })
+        return format_response(
+            {
+                "error": "State-of-charge not available.",
+                "hint": "Bike may be offline or ConnectModule not installed.",
+            }
+        )
 
     # Save snapshot to DB for historical tracking
     conn = db.get_db()

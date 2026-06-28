@@ -1,14 +1,21 @@
 """Tests for config path resolution."""
 
-import os
-import pytest
 from pathlib import Path
 
 from bosch_flow_mcp.config import (
-    CONFIG_DIR, DB_PATH, BOSCH_TOKENS_PATH, BOSCH_CONFIG_PATH,
-    CLIENT_ID, REDIRECT_URI, SCOPE,
-    BOSCH_AUTH_URL, BOSCH_TOKEN_URL, MOBILE_API_BASE, DATA_ACT_API_BASE,
-    BES3_BIKES, BES3_BIKE, BES3_REGISTRATIONS,
+    BES3_BIKE,
+    BES3_BIKES,
+    BES3_REGISTRATIONS,
+    BOSCH_AUTH_URL,
+    BOSCH_TOKEN_URL,
+    BOSCH_TOKENS_PATH,
+    CLIENT_ID,
+    CONFIG_DIR,
+    DATA_ACT_API_BASE,
+    DB_PATH,
+    MOBILE_API_BASE,
+    REDIRECT_URI,
+    SCOPE,
 )
 
 
@@ -32,7 +39,9 @@ def test_env_override_config_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("BOSCH_FLOW_MCP_CONFIG_DIR", str(tmp_path / "custom_config"))
     # Re-import to pick up env var (use importlib to avoid cached module)
     import importlib
+
     import bosch_flow_mcp.config as cfg_module
+
     importlib.reload(cfg_module)
     assert str(tmp_path / "custom_config") in str(cfg_module.CONFIG_DIR)
     # Restore

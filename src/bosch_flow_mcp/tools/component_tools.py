@@ -2,9 +2,9 @@
 
 import anyio
 
-from ..mcp_instance import mcp
-from ..helpers import format_response, require_auth
 from .. import db
+from ..helpers import format_response, require_auth
+from ..mcp_instance import mcp
 from .sync_tools import auto_sync_if_stale
 
 

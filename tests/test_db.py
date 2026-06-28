@@ -1,21 +1,22 @@
 """Tests for SQLite schema and helpers."""
 
-import json
-import pytest
 from datetime import datetime, timezone
 
 from bosch_flow_mcp import db
 from tests.conftest import (
-    FAKE_BIKE_ID, FAKE_BATTERY_ID, FAKE_PART_NUMBER, FAKE_SERIAL_NUMBER,
+    FAKE_BATTERY_ID,
+    FAKE_BIKE_ID,
+    FAKE_PART_NUMBER,
+    FAKE_SERIAL_NUMBER,
 )
 
 
 def test_get_db_creates_schema(tmp_path):
     """get_db creates all required tables."""
     conn = db.get_db(tmp_path / "test.db")
-    tables = {r[0] for r in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table'"
-    ).fetchall()}
+    tables = {
+        r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    }
     assert "bikes" in tables
     assert "batteries" in tables
     assert "components" in tables
@@ -28,12 +29,16 @@ def test_get_db_creates_schema(tmp_path):
 
 
 def test_save_and_query_bike(tmp_db):
-    db.save_bike(tmp_db, FAKE_BIKE_ID, {
-        "name": "My Test Bike",
-        "brand_name": "TestBrand",
-        "frame_number": "TEST123",
-        "raw": {"extra": "data"},
-    })
+    db.save_bike(
+        tmp_db,
+        FAKE_BIKE_ID,
+        {
+            "name": "My Test Bike",
+            "brand_name": "TestBrand",
+            "frame_number": "TEST123",
+            "raw": {"extra": "data"},
+        },
+    )
     tmp_db.commit()
     bikes = db.query_bikes(tmp_db)
     assert len(bikes) == 1
@@ -79,7 +84,6 @@ def test_save_battery_snapshot_ignore_duplicate(tmp_db):
 
 
 def test_save_and_query_component(tmp_db):
-    now = datetime.now(timezone.utc).isoformat()
     comp = {
         "partNumber": FAKE_PART_NUMBER,
         "serialNumber": FAKE_SERIAL_NUMBER,
@@ -95,7 +99,9 @@ def test_save_and_query_component(tmp_db):
 
 
 def test_save_capacity_test(tmp_db):
-    db.save_capacity_test(tmp_db, FAKE_PART_NUMBER, FAKE_SERIAL_NUMBER, "2026-03-01", {"result": "ok"})
+    db.save_capacity_test(
+        tmp_db, FAKE_PART_NUMBER, FAKE_SERIAL_NUMBER, "2026-03-01", {"result": "ok"}
+    )
     tmp_db.commit()
     tests = db.query_capacity_tests(tmp_db, FAKE_PART_NUMBER, FAKE_SERIAL_NUMBER)
     assert len(tests) == 1

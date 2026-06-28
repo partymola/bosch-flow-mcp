@@ -1,12 +1,13 @@
 """Battery trend analysis tool."""
 
-import anyio
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date
 
-from ..mcp_instance import mcp
-from ..helpers import format_response, require_auth
+import anyio
+
 from .. import db
+from ..helpers import format_response, require_auth
+from ..mcp_instance import mcp
 from .sync_tools import auto_sync_if_stale
 
 
@@ -59,6 +60,7 @@ async def bosch_battery_trends(
         # Fetch all snapshots for the date range
         if start_date or end_date:
             from ..helpers import parse_date
+
             start, end = parse_date(start_date, end_date, default_days=180)
             start_str, end_str = start.isoformat(), end.isoformat()
         else:
@@ -68,10 +70,12 @@ async def bosch_battery_trends(
         conn.close()
 
     if not snapshots:
-        return format_response({
-            "message": "No battery data found. Run bosch_sync first.",
-            "trends": [],
-        })
+        return format_response(
+            {
+                "message": "No battery data found. Run bosch_sync first.",
+                "trends": [],
+            }
+        )
 
     # Choose period key function
     if period == "weekly":
@@ -90,26 +94,42 @@ async def bosch_battery_trends(
     trends = []
     for (b_id, bat_id, p), snaps in sorted(groups.items()):
         valid_levels = [s["battery_level"] for s in snaps if s["battery_level"] is not None]
-        valid_cycles = [s["charge_cycles_total"] for s in snaps if s["charge_cycles_total"] is not None]
-        valid_remaining = [s["remaining_energy_wh"] for s in snaps if s["remaining_energy_wh"] is not None]
-        valid_lifetime = [s["delivered_wh_lifetime"] for s in snaps if s["delivered_wh_lifetime"] is not None]
+        valid_cycles = [
+            s["charge_cycles_total"] for s in snaps if s["charge_cycles_total"] is not None
+        ]
+        valid_remaining = [
+            s["remaining_energy_wh"] for s in snaps if s["remaining_energy_wh"] is not None
+        ]
+        valid_lifetime = [
+            s["delivered_wh_lifetime"] for s in snaps if s["delivered_wh_lifetime"] is not None
+        ]
 
-        trends.append({
-            "bike_id": b_id,
-            "battery_id": bat_id,
-            "period": p,
-            "snapshots": len(snaps),
-            "avg_battery_level_pct": round(sum(valid_levels) / len(valid_levels), 1) if valid_levels else None,
-            "charge_cycles_end": max(valid_cycles) if valid_cycles else None,
-            "charge_cycles_start": min(valid_cycles) if valid_cycles else None,
-            "charge_cycles_added": (max(valid_cycles) - min(valid_cycles)) if len(valid_cycles) >= 2 else None,
-            "avg_remaining_energy_wh": round(sum(valid_remaining) / len(valid_remaining), 1) if valid_remaining else None,
-            "max_delivered_wh_lifetime": max(valid_lifetime) if valid_lifetime else None,
-        })
+        trends.append(
+            {
+                "bike_id": b_id,
+                "battery_id": bat_id,
+                "period": p,
+                "snapshots": len(snaps),
+                "avg_battery_level_pct": round(sum(valid_levels) / len(valid_levels), 1)
+                if valid_levels
+                else None,
+                "charge_cycles_end": max(valid_cycles) if valid_cycles else None,
+                "charge_cycles_start": min(valid_cycles) if valid_cycles else None,
+                "charge_cycles_added": (max(valid_cycles) - min(valid_cycles))
+                if len(valid_cycles) >= 2
+                else None,
+                "avg_remaining_energy_wh": round(sum(valid_remaining) / len(valid_remaining), 1)
+                if valid_remaining
+                else None,
+                "max_delivered_wh_lifetime": max(valid_lifetime) if valid_lifetime else None,
+            }
+        )
 
-    return format_response({
-        "period": period,
-        "bike_id": bike_id,
-        "data_points": len(snapshots),
-        "trends": trends,
-    })
+    return format_response(
+        {
+            "period": period,
+            "bike_id": bike_id,
+            "data_points": len(snapshots),
+            "trends": trends,
+        }
+    )

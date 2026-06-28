@@ -1,8 +1,9 @@
 """Tests for battery trend analysis."""
 
 import json
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 from tests.conftest import FAKE_BIKE_ID
 
@@ -23,12 +24,15 @@ def patch_auto_sync():
 @pytest.fixture(autouse=True)
 def patch_db_path(populated_db, tmp_path, monkeypatch):
     import bosch_flow_mcp.db as db_module
+
     db_file = tmp_path / "test_analysis.db"
     conn = db_module.get_db(db_file)
     for table in ["batteries", "bikes", "sync_log"]:
         rows = populated_db.execute(f"SELECT * FROM {table}").fetchall()
         if rows:
-            cols = [d[0] for d in populated_db.execute(f"SELECT * FROM {table} LIMIT 0").description]
+            cols = [
+                d[0] for d in populated_db.execute(f"SELECT * FROM {table} LIMIT 0").description
+            ]
             placeholders = ",".join(["?"] * len(cols))
             conn.executemany(
                 f"INSERT OR IGNORE INTO {table} ({','.join(cols)}) VALUES ({placeholders})",
@@ -42,6 +46,7 @@ def patch_db_path(populated_db, tmp_path, monkeypatch):
 
 async def test_battery_trends_monthly():
     from bosch_flow_mcp.tools.analysis_tools import bosch_battery_trends
+
     result = await bosch_battery_trends(period="monthly")
     data = json.loads(result)
     assert "trends" in data
@@ -55,6 +60,7 @@ async def test_battery_trends_monthly():
 
 async def test_battery_trends_weekly():
     from bosch_flow_mcp.tools.analysis_tools import bosch_battery_trends
+
     result = await bosch_battery_trends(period="weekly")
     data = json.loads(result)
     assert len(data["trends"]) > 1  # Multiple weeks
@@ -62,6 +68,7 @@ async def test_battery_trends_weekly():
 
 async def test_battery_trends_shows_cycle_growth():
     from bosch_flow_mcp.tools.analysis_tools import bosch_battery_trends
+
     result = await bosch_battery_trends(period="monthly")
     data = json.loads(result)
     # Each period should show charge cycle growth
@@ -72,6 +79,7 @@ async def test_battery_trends_shows_cycle_growth():
 
 async def test_battery_trends_filtered_by_bike():
     from bosch_flow_mcp.tools.analysis_tools import bosch_battery_trends
+
     result = await bosch_battery_trends(bike_id=FAKE_BIKE_ID)
     data = json.loads(result)
     assert data["bike_id"] == FAKE_BIKE_ID
@@ -82,11 +90,13 @@ async def test_battery_trends_filtered_by_bike():
 async def test_battery_trends_no_data(tmp_path, monkeypatch):
     """Returns helpful message when no data is in the cache."""
     import bosch_flow_mcp.db as db_module
+
     db_file = tmp_path / "empty.db"
     db_module.get_db(db_file).close()
     monkeypatch.setenv("BOSCH_FLOW_MCP_DB_PATH", str(db_file))
 
     from bosch_flow_mcp.tools.analysis_tools import bosch_battery_trends
+
     result = await bosch_battery_trends()
     data = json.loads(result)
     assert "message" in data
