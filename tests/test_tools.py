@@ -160,3 +160,26 @@ async def test_bosch_get_capacity():
     data = json.loads(result)
     assert "capacity_tests" in data
     assert data["count"] == 1
+
+
+async def test_soc_forbidden_is_graceful():
+    """A euda token 403s the mobile soc endpoint -> a client-aware hint, not a crash."""
+    from bosch_flow_mcp.tools import battery_tools
+
+    with patch(
+        "bosch_flow_mcp.tools.battery_tools.api.get",
+        side_effect=battery_tools.api.BoschForbiddenError("403"),
+    ):
+        data = json.loads(await battery_tools.bosch_get_soc(FAKE_BIKE_ID))
+    assert "error" in data
+    assert "one-bike-app" in data["hint"]
+
+
+async def test_soc_none_keeps_offline_message():
+    """Regression: a None response (404/offline) still gives the offline hint."""
+    from bosch_flow_mcp.tools import battery_tools
+
+    with patch("bosch_flow_mcp.tools.battery_tools.api.get", return_value=None):
+        data = json.loads(await battery_tools.bosch_get_soc(FAKE_BIKE_ID))
+    assert "error" in data
+    assert "offline" in data["hint"].lower() or "ConnectModule" in data["hint"]

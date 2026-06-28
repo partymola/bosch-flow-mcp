@@ -1,11 +1,14 @@
 """OAuth token management for the Bosch Flow MCP server.
 
 Two auth paths (auto-detected):
-  - EUDA (preferred): If config/bosch_config.json has a client_id, uses that
-    with PKCE + localhost:4200 callback. No DevTools needed. Register at
-    portal.bosch-ebike.com/data-act/app to get your own euda-* client_id.
-  - one-bike-app (fallback): If no config file, uses the mobile app's public
-    client. Requires DevTools URL paste due to iOS deep link redirect.
+  - one-bike-app (default): the standard Bosch eBike Flow app's public client.
+    Works for any account, including non-EU. Requires a DevTools URL paste due to
+    the iOS deep-link redirect.
+  - EUDA (optional, EU only): if config/bosch_config.json has a client_id, uses it
+    with PKCE + a localhost:4200 callback. Register at
+    portal.bosch-ebike.com/data-act/app to get your own euda-* client_id. This adds
+    the Data-Act-only endpoints (service book, software-update history, capacity
+    testers) but returns no data for accounts registered outside the EU.
 """
 
 import base64
@@ -75,11 +78,41 @@ def _get_client_id() -> str:
 
 
 def _is_euda() -> bool:
-    """True if using a registered EUDA client (has config file)."""
+    """True if a registered EUDA client is configured (config file present).
+
+    Used only by the interactive auth flow to pick which login to run. For routing
+    sync requests, use token_is_euda() instead - it reflects the token actually in
+    use, not just what config exists.
+    """
     if BOSCH_CONFIG_PATH.exists():
         cfg = _load_json(BOSCH_CONFIG_PATH)
         return bool(cfg.get("client_id", ""))
     return False
+
+
+def current_client_id() -> str:
+    """Return the client_id of the token currently in use, reading the token file fresh.
+
+    The token file is the single source of truth: both _exchange_code and
+    refresh_token write the client_id into it, so reading it each call reflects an
+    out-of-band re-auth (e.g. switching from a euda client to one-bike-app) without
+    needing a server restart. Falls back to the configured/default client when no
+    token exists yet (CLI sync before auth) or a legacy token lacks the field.
+    Never raises and never returns None.
+    """
+    try:
+        if BOSCH_TOKENS_PATH.exists():
+            cid = _load_json(BOSCH_TOKENS_PATH).get("client_id")
+            if cid:
+                return cid
+    except (OSError, ValueError):
+        pass
+    return _get_client_id()
+
+
+def token_is_euda() -> bool:
+    """True if the active token was minted by a euda-* (EU Data Act) client."""
+    return current_client_id().startswith("euda-")
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +204,13 @@ def setup_auth() -> None:
     to one-bike-app with DevTools URL paste.
     """
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+    print(
+        "\nUnofficial tool, not affiliated with or endorsed by Bosch. It signs in with "
+        "your own\nBosch eBike Flow account for read-only access to your own data. By "
+        "continuing you\nconfirm you accept Bosch's and SingleKey ID's terms of use. It "
+        "may stop working if\nBosch changes their API."
+    )
 
     if _is_euda():
         _setup_euda_auth()

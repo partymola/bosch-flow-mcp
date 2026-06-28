@@ -1,9 +1,14 @@
 """Bosch Flow API client with automatic token refresh.
 
-All requests use the same one-bike-app token. The base URL parameter selects
-which API to hit:
-  - MOBILE_API_BASE (default): bike profiles, SoC, activities
-  - DATA_ACT_API_BASE: capacity testers, service book, registrations, etc.
+Requests carry whichever token the user authenticated with (one-bike-app for the
+standard app sign-in, or a euda-* client for the EU Data Act API). The base URL
+parameter selects which API to hit:
+  - MOBILE_API_BASE (default): bike profiles, SoC, activities (one-bike-app token)
+  - DATA_ACT_API_BASE: capacity testers, service book, registrations (euda token)
+
+Each Keycloak client is accepted only by its own API host (a one-bike-app token
+403s on the Data Act API and vice versa), so the sync layer routes by the token's
+client_id rather than calling both.
 """
 
 import json
@@ -27,6 +32,14 @@ class BoschRateLimitError(Exception):
 
 class BoschAPIError(Exception):
     """General API error."""
+
+
+class BoschForbiddenError(BoschAPIError):
+    """403 Forbidden - this token's client is not accepted by the target API host.
+
+    Raised (rather than swallowed) so the sync layer can tell "you used the wrong
+    client for this endpoint" apart from "you genuinely have no data" (an empty 200).
+    """
 
 
 def get(path: str, base: str = MOBILE_API_BASE, retries: int = 3) -> dict | list | None:
@@ -71,7 +84,10 @@ def get(path: str, base: str = MOBILE_API_BASE, retries: int = 3) -> dict | list
 
             if e.code == 403:
                 logger.info("Forbidden (403) for %s - token not accepted by this endpoint", path)
-                return None
+                raise BoschForbiddenError(
+                    f"Forbidden (403) for {path}: this sign-in's client is not accepted "
+                    f"by {base}"
+                ) from e
 
             if e.code == 404:
                 logger.debug("Resource not found (404): %s", path)

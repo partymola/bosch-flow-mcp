@@ -6,9 +6,31 @@ import re
 from datetime import date, timedelta
 from typing import Any
 
+from . import db
 from .config import BOSCH_TOKENS_PATH
 
 # --- Response formatting ---
+
+
+def empty_data_note(conn, data_type: str, fallback_type: str | None = None) -> dict:
+    """Explain an empty get-tool result, or {} when the data is genuinely current.
+
+    When a get-tool returns no rows, the latest sync may have been skipped (the type
+    needs the EU Data Act client), euda-empty (a non-EU account the Data Act API
+    shares nothing for), or errored. Surfacing that as data_status + note stops an
+    empty result from reading to the model as "you have none" when it really means
+    "couldn't fetch with this sign-in". Returns {} when the last sync was 'ok'.
+
+    fallback_type lets a downstream type (batteries/components) inherit the bikes
+    diagnostic: if bikes came back euda-empty, everything derived from it is empty too.
+    """
+    note = db.last_sync_note(conn, data_type)
+    if note is None and fallback_type:
+        note = db.last_sync_note(conn, fallback_type)
+    if note is None:
+        return {}
+    status, message = note
+    return {"data_status": status, "note": message}
 
 
 def format_response(result: Any) -> str:
@@ -71,7 +93,7 @@ def _parse_single_date(date_str: str | None, default: date, is_end: bool) -> dat
 
 
 def require_auth(func):
-    """Decorator that checks EUDA tokens exist before calling a tool."""
+    """Decorator that checks Bosch tokens exist before calling a tool."""
 
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):

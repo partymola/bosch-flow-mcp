@@ -112,3 +112,51 @@ def test_generate_pkce():
     assert len(challenge) >= 40
     assert "=" not in verifier
     assert "=" not in challenge
+
+
+# --- Routing helpers: current_client_id / token_is_euda ---
+
+
+def test_current_client_id_reads_stored_id(token_as):
+    """current_client_id reflects the client_id written in the token file."""
+    token_as("euda-abc123")
+    assert auth_module.current_client_id() == "euda-abc123"
+
+
+def test_current_client_id_fallback_when_no_client_id(tmp_path, monkeypatch):
+    """A legacy token lacking client_id falls back to the default client."""
+    path = tmp_path / "tokens.json"
+    path.write_text(json.dumps({"access_token": "x", "expiry": 9999999999}))
+    monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", path)
+    assert auth_module.current_client_id() == CLIENT_ID
+
+
+def test_current_client_id_missing_file_fallback():
+    """With no token file (isolated by default), falls back without raising."""
+    assert auth_module.current_client_id() == CLIENT_ID
+
+
+def test_current_client_id_reflects_file_change(token_as):
+    """current_client_id reads the file fresh, so an out-of-band re-auth is seen."""
+    token_as("one-bike-app")
+    assert auth_module.current_client_id() == "one-bike-app"
+    token_as("euda-newclient")  # rewrites the same token file
+    assert auth_module.current_client_id() == "euda-newclient"
+
+
+@pytest.mark.parametrize(
+    "client_id,expected",
+    [
+        ("euda-00000000-0000-0000-0000-000000000001", True),
+        ("euda-", True),
+        ("one-bike-app", False),
+    ],
+)
+def test_token_is_euda(token_as, client_id, expected):
+    token_as(client_id)
+    assert auth_module.token_is_euda() is expected
+
+
+def test_token_is_euda_no_token_is_false():
+    """No token file -> default one-bike-app -> not euda (and no crash on None)."""
+    assert auth_module.token_is_euda() is False

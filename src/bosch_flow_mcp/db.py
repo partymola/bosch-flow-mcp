@@ -185,6 +185,12 @@ def save_capacity_test(
 
 def save_component(conn: sqlite3.Connection, bike_id: str, component_type: str, row: dict) -> None:
     now = datetime.now(timezone.utc).isoformat()
+    part = row.get("partNumber") or row.get("part_number")
+    serial = row.get("serialNumber") or row.get("serial_number")
+    # The UNIQUE key includes serial_number, and SQLite treats NULLs as distinct -
+    # a null serial would make INSERT OR REPLACE insert a fresh duplicate every sync.
+    # Fall back to part number, then component type, so re-syncs replace in place.
+    dedup_serial = serial or part or component_type
     conn.execute(
         """INSERT OR REPLACE INTO components
         (bike_id, component_type, part_number, serial_number, product_name,
@@ -193,14 +199,25 @@ def save_component(conn: sqlite3.Connection, bike_id: str, component_type: str, 
         (
             bike_id,
             component_type,
-            row.get("partNumber") or row.get("part_number"),
-            row.get("serialNumber") or row.get("serial_number"),
+            part,
+            dedup_serial,
             row.get("productName") or row.get("product_name"),
             row.get("softwareVersion") or row.get("software_version"),
             json.dumps(row),
             now,
         ),
     )
+
+
+def delete_components_for_bike(conn: sqlite3.Connection, bike_id: str) -> None:
+    """Remove a bike's component rows so a fresh sync reflects current state only.
+
+    Components are a snapshot, not a time series: re-fetching should replace the set
+    (e.g. after switching between the euda and one-bike-app clients, whose responses
+    differ), not accumulate a stale union. Call before repopulating from a sync that
+    actually returned component data.
+    """
+    conn.execute("DELETE FROM components WHERE bike_id = ?", (bike_id,))
 
 
 def save_service_record(conn: sqlite3.Connection, bike_id: str, record: dict) -> None:
@@ -270,14 +287,46 @@ def log_sync(
 # ---------------------------------------------------------------------------
 
 
+# Sync outcomes that mean "we already checked this today, don't re-run" - a terminal
+# result, whether it returned data ('ok'), returned a diagnostic empty ('empty'), or is
+# unavailable with the current client ('unavailable'). 'error'/'auth_error' are transient
+# and should be retried.
+_SETTLED_SYNC_STATUSES = ("ok", "unavailable", "empty")
+
+
 def get_last_sync_time(conn: sqlite3.Connection, data_type: str) -> datetime | None:
-    """Return timestamp of most recent successful sync for a data type."""
+    """Return timestamp of the most recent settled sync for a data type.
+
+    Used only by auto_sync_if_stale to decide whether to re-sync. "Settled" covers
+    ok/empty/unavailable so a permanently-unavailable type (e.g. service book under the
+    one-bike-app client) is not re-synced on every read. Note: a user who registers a
+    euda client mid-day must run an explicit bosch_sync to pick up the Data-Act-only
+    types the same day (they refresh automatically the next day).
+    """
+    placeholders = ",".join("?" for _ in _SETTLED_SYNC_STATUSES)
     row = conn.execute(
-        "SELECT MAX(synced_at) AS t FROM sync_log WHERE data_type = ? AND status = 'ok'",
-        (data_type,),
+        f"SELECT MAX(synced_at) AS t FROM sync_log "
+        f"WHERE data_type = ? AND status IN ({placeholders})",
+        (data_type, *_SETTLED_SYNC_STATUSES),
     ).fetchone()
     if row and row["t"]:
         return datetime.fromisoformat(row["t"])
+    return None
+
+
+def last_sync_note(conn: sqlite3.Connection, data_type: str) -> tuple[str, str] | None:
+    """Return (status, note) of the latest sync_log row for a type if it is not 'ok'.
+
+    Lets a get-tool explain WHY a result is empty (wrong client, euda non-EU, last
+    error) instead of returning a silent count:0. Returns None when the latest sync
+    was 'ok' (a genuinely empty result must not cry wolf) or there is no sync yet.
+    """
+    row = conn.execute(
+        "SELECT status, notes FROM sync_log WHERE data_type = ? ORDER BY id DESC LIMIT 1",
+        (data_type,),
+    ).fetchone()
+    if row and row["status"] != "ok":
+        return row["status"], row["notes"] or ""
     return None
 
 

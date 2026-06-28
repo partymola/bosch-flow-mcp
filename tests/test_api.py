@@ -7,7 +7,12 @@ from urllib.error import HTTPError, URLError
 import pytest
 
 import bosch_flow_mcp.api as api_module
-from bosch_flow_mcp.api import BoschAPIError, BoschAuthError, BoschRateLimitError
+from bosch_flow_mcp.api import (
+    BoschAPIError,
+    BoschAuthError,
+    BoschForbiddenError,
+    BoschRateLimitError,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -37,6 +42,19 @@ def test_get_404_returns_none():
     with patch("urllib.request.urlopen", side_effect=err):
         result = api_module.get("/some/path")
     assert result is None
+
+
+def test_get_403_raises_forbidden():
+    """403 must raise (not return None) so routing can distinguish wrong-client."""
+    err = HTTPError(url="", code=403, msg="Forbidden", hdrs={}, fp=None)
+    with patch("urllib.request.urlopen", side_effect=err):
+        with pytest.raises(BoschForbiddenError):
+            api_module.get("/some/path")
+
+
+def test_forbidden_is_subclass_of_api_error():
+    """run_sync's except BoschAPIError and the soc handler rely on this hierarchy."""
+    assert issubclass(BoschForbiddenError, BoschAPIError)
 
 
 def test_get_429_raises_rate_limit():

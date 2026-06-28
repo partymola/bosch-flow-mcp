@@ -18,6 +18,116 @@ FAKE_FRAME_NUMBER = "TESTFRAME001"
 FAKE_PART_NUMBER = "TESTPART001"
 FAKE_SERIAL_NUMBER = "SN123456"
 
+# A masked, fictional mobile /v2/bike-profile response, mirroring the real shape:
+# batteries list + singleton component sections, ABS null (no-ABS bike), one section
+# (headUnit) absent entirely. All values fictional.
+FAKE_V2_PROFILE = {
+    "id": FAKE_BIKE_ID,
+    "brandName": "TestBrand",
+    "antiLockBrakeSystem": None,  # bike without ABS -> must be skipped
+    "batteries": [
+        {
+            "partNumber": "TESTBATT01",
+            "productCode": "TBP3000",
+            "serialNumber": "BATTSN0001",
+            "productName": "PowerTube Test 800",
+            "softwareVersion": "19.0.1",
+            "hardwareVersion": "4.0.0",
+            "numberOfFullChargeCycles": {"total": 5, "onBike": 0, "offBike": 5},
+            "deliveredWhOverLifetime": 1000,
+            "totalEnergy": 800.0,
+            "batteryLevel": None,
+            "remainingEnergy": None,
+            "isCharging": None,
+        },
+        {
+            "partNumber": "TESTBATT02",
+            "productCode": "TBP2000",
+            "serialNumber": "BATTSN0002",
+            "productName": "PowerTube Test 625",
+            "softwareVersion": "19.0.1",
+            "numberOfFullChargeCycles": {"total": 3, "onBike": 1, "offBike": 2},
+            "deliveredWhOverLifetime": 500,
+            "totalEnergy": 625.0,
+        },
+    ],
+    "driveUnit": {
+        "partNumber": "TESTDU001",
+        "productCode": "TDU3000",
+        "serialNumber": "DUSN0001",
+        "productName": "Test Drive Unit PX",
+        "softwareVersion": "19.5.0",
+        "hardwareVersion": "1.2.0",
+    },
+    "connectedModule": {
+        "partNumber": "TESTCM001",
+        "productCode": "TCM3000",
+        "serialNumber": "CMSN0001",
+        "productName": "Test ConnectModule",
+        "softwareVersion": "19.1.0",
+    },
+    "remoteControl": {
+        "partNumber": "TESTRC001",
+        "productCode": "TRC3000",
+        "serialNumber": "RCSN0001",
+        "productName": "Test Remote",
+        "softwareVersion": "19.2.0",
+    },
+    # "headUnit" key intentionally absent -> exercises the missing-section path.
+}
+
+
+@pytest.fixture(autouse=True)
+def _isolate_credentials(tmp_path, monkeypatch):
+    """Hermetic credentials: never read the developer's real token/config file.
+
+    Points auth at non-existent paths so current_client_id() falls back to the
+    default (one-bike-app) unless a test writes its own token via token_as(). Resets
+    the in-memory token cache around every test. This is both correctness (the new
+    routing reads the token file) and public-repo data safety.
+    """
+    import bosch_flow_mcp.auth as auth_module
+
+    monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", tmp_path / "_no_tokens.json")
+    monkeypatch.setattr(auth_module, "BOSCH_CONFIG_PATH", tmp_path / "_no_config.json")
+    # require_auth only checks the file EXISTS (never reads it); point it at a fictional
+    # present file so no tool test silently depends on the real token file existing.
+    present = tmp_path / "_auth_present.json"
+    present.write_text(json.dumps({"access_token": "fake", "expiry": 9999999999}))
+    monkeypatch.setattr("bosch_flow_mcp.helpers.BOSCH_TOKENS_PATH", present)
+    auth_module._tokens = None
+    yield
+    auth_module._tokens = None
+
+
+@pytest.fixture
+def token_as(tmp_path, monkeypatch):
+    """Factory: write a fictional token file with a chosen client_id and route to it.
+
+    Drives the REAL current_client_id()/token_is_euda() chain off an actual file, so
+    routing tests exercise the client_id->route decision instead of mocking it away.
+    """
+
+    def _set(client_id: str):
+        import bosch_flow_mcp.auth as auth_module
+
+        path = tmp_path / "tokens.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "access_token": "fake_access",
+                    "refresh_token": "fake_refresh",
+                    "expiry": 9999999999,
+                    "client_id": client_id,
+                }
+            )
+        )
+        monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", path)
+        auth_module._tokens = None
+        return path
+
+    return _set
+
 
 @pytest.fixture
 def tmp_db(tmp_path):

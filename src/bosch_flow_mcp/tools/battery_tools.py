@@ -4,7 +4,7 @@ import anyio
 
 from .. import api, db
 from ..config import MOBILE_STATE_OF_CHARGE
-from ..helpers import format_response, parse_date, require_auth
+from ..helpers import empty_data_note, format_response, parse_date, require_auth
 from ..mcp_instance import mcp
 from .sync_tools import auto_sync_if_stale
 
@@ -40,10 +40,11 @@ async def bosch_get_batteries(
         else:
             start, end = parse_date(start_date, end_date, default_days=30)
             snapshots = db.query_batteries(conn, bike_id, start.isoformat(), end.isoformat())
+        note = empty_data_note(conn, "batteries", fallback_type="bikes") if not snapshots else {}
     finally:
         conn.close()
 
-    return format_response({"batteries": snapshots, "count": len(snapshots)})
+    return format_response({"batteries": snapshots, "count": len(snapshots), **note})
 
 
 @mcp.tool()
@@ -71,6 +72,14 @@ async def bosch_get_soc(bike_id: str) -> str:
             {
                 "error": str(e),
                 "hint": "Run: bosch-flow-mcp auth",
+            }
+        )
+    except api.BoschForbiddenError:
+        return format_response(
+            {
+                "error": "Live state-of-charge is not available with your current sign-in.",
+                "hint": "It needs the standard Bosch eBike Flow app sign-in (one-bike-app), "
+                "not an EU Data Act (euda) client - or the bike may be offline.",
             }
         )
     except api.BoschAPIError as e:
@@ -107,6 +116,9 @@ async def bosch_get_capacity(
     typically done at dealer service appointments. Includes remaining capacity
     percentage vs. original specification.
 
+    Capacity-tester data comes only from the EU Data Act API; with a standard Bosch
+    eBike Flow sign-in this is empty and the result explains why.
+
     Args:
         part_number: Optional battery part number to filter results.
         serial_number: Optional battery serial number to filter results.
@@ -115,7 +127,8 @@ async def bosch_get_capacity(
     conn = db.get_db()
     try:
         tests = db.query_capacity_tests(conn, part_number, serial_number)
+        note = empty_data_note(conn, "capacity") if not tests else {}
     finally:
         conn.close()
 
-    return format_response({"capacity_tests": tests, "count": len(tests)})
+    return format_response({"capacity_tests": tests, "count": len(tests), **note})

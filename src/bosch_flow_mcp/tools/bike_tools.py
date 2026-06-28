@@ -3,7 +3,7 @@
 import anyio
 
 from .. import db
-from ..helpers import format_response, require_auth
+from ..helpers import empty_data_note, format_response, require_auth
 from ..mcp_instance import mcp
 from .sync_tools import auto_sync_if_stale
 
@@ -22,6 +22,7 @@ async def bosch_get_bikes() -> str:
     conn = db.get_db()
     try:
         bikes = db.query_bikes(conn)
+        note = empty_data_note(conn, "bikes") if not bikes else {}
     finally:
         conn.close()
 
@@ -29,7 +30,7 @@ async def bosch_get_bikes() -> str:
     for bike in bikes:
         bike.pop("raw_json", None)
 
-    return format_response({"bikes": bikes, "count": len(bikes)})
+    return format_response({"bikes": bikes, "count": len(bikes), **note})
 
 
 @mcp.tool()

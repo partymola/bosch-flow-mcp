@@ -37,6 +37,7 @@ MOBILE_API_BASE = "https://obc-rider-profile.prod.connected-biking.cloud"
 DATA_ACT_API_BASE = "https://api.bosch-ebike.com"
 
 # --- Mobile API endpoint paths ---
+MOBILE_BIKE_PROFILE_LIST = "/v1/bike-profile"
 MOBILE_BIKE_PROFILE_V2 = "/v2/bike-profile/{bike_id}"
 MOBILE_STATE_OF_CHARGE = "/v1/state-of-charge/{bike_id}"
 

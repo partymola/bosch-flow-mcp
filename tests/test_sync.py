@@ -160,3 +160,34 @@ def test_auto_sync_if_stale_swallows_errors(tmp_path, monkeypatch):
 
     with patch("bosch_flow_mcp.tools.sync_tools.run_sync", side_effect=RuntimeError("auth error")):
         auto_sync_if_stale("batteries")  # Should not raise
+
+
+def test_auto_sync_skips_after_unavailable_today(tmp_path, monkeypatch):
+    """An 'unavailable' result counts as 'checked today' - no retry spam."""
+    import bosch_flow_mcp.db as db_module
+
+    db_path = tmp_path / "test.db"
+    monkeypatch.setenv("BOSCH_FLOW_MCP_DB_PATH", str(db_path))
+    conn = db_module.get_db(db_path)
+    db_module.log_sync(conn, "service", "unavailable", 0, "needs euda")
+    conn.close()
+
+    with patch("bosch_flow_mcp.tools.sync_tools.run_sync") as mock_run:
+        auto_sync_if_stale("service")
+        mock_run.assert_not_called()
+
+
+def test_auto_sync_retries_after_error_today(tmp_path, monkeypatch):
+    """An 'error' is transient and must be retried on the next read."""
+    import bosch_flow_mcp.db as db_module
+
+    db_path = tmp_path / "test.db"
+    monkeypatch.setenv("BOSCH_FLOW_MCP_DB_PATH", str(db_path))
+    conn = db_module.get_db(db_path)
+    db_module.log_sync(conn, "batteries", "error", 0, "boom")
+    conn.close()
+
+    with patch("bosch_flow_mcp.tools.sync_tools.run_sync") as mock_run:
+        mock_run.return_value = {"batteries": {"status": "ok", "records": 0}}
+        auto_sync_if_stale("batteries")
+        mock_run.assert_called_once_with(["batteries"])

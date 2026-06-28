@@ -2,6 +2,8 @@
 
 from datetime import datetime, timezone
 
+import pytest
+
 from bosch_flow_mcp import db
 from tests.conftest import (
     FAKE_BATTERY_ID,
@@ -146,3 +148,107 @@ def test_query_software_updates(populated_db):
     assert len(updates) == 1
     assert updates[0]["from_version"] == "4.5.5"
     assert updates[0]["to_version"] == "4.5.6"
+
+
+# --- Component null-serial dedup + reconciliation ---
+
+
+def test_save_component_null_serial_no_duplicates(tmp_db):
+    """A component with no serial must not insert a fresh duplicate every sync.
+
+    SQLite treats NULLs as distinct in the UNIQUE index, so without a dedup key the
+    row would accumulate. save_component falls back serial -> part -> type.
+    """
+    comp = {"partNumber": "DUPART01", "productName": "No-Serial DU", "softwareVersion": "1.0"}
+    for _ in range(3):
+        db.save_component(tmp_db, FAKE_BIKE_ID, "driveUnit", comp)
+    tmp_db.commit()
+    rows = db.query_components(tmp_db, FAKE_BIKE_ID, "driveUnit")
+    assert len(rows) == 1
+    # dedup key falls back to part number when serial is absent
+    assert rows[0]["serial_number"] == "DUPART01"
+
+
+def test_save_component_null_serial_and_part_uses_type(tmp_db):
+    """With neither serial nor part, the component type itself is the dedup key."""
+    comp = {"productName": "Mystery part"}
+    db.save_component(tmp_db, FAKE_BIKE_ID, "headUnit", comp)
+    db.save_component(tmp_db, FAKE_BIKE_ID, "headUnit", comp)
+    tmp_db.commit()
+    rows = db.query_components(tmp_db, FAKE_BIKE_ID, "headUnit")
+    assert len(rows) == 1
+    assert rows[0]["serial_number"] == "headUnit"
+
+
+def test_save_component_resync_replaces_version(tmp_db):
+    """Re-syncing the same component (by serial) replaces in place, no duplicate."""
+    comp = {"partNumber": "P1", "serialNumber": "S1", "softwareVersion": "1.0.0"}
+    db.save_component(tmp_db, FAKE_BIKE_ID, "driveUnit", comp)
+    comp["softwareVersion"] = "1.1.0"
+    db.save_component(tmp_db, FAKE_BIKE_ID, "driveUnit", comp)
+    tmp_db.commit()
+    rows = db.query_components(tmp_db, FAKE_BIKE_ID, "driveUnit")
+    assert len(rows) == 1
+    assert rows[0]["software_version"] == "1.1.0"
+
+
+def test_delete_components_for_bike(tmp_db):
+    db.save_component(tmp_db, FAKE_BIKE_ID, "driveUnit", {"partNumber": "P1", "serialNumber": "S1"})
+    db.save_component(tmp_db, FAKE_BIKE_ID, "battery", {"partNumber": "P2", "serialNumber": "S2"})
+    db.save_component(tmp_db, "other-bike", "driveUnit", {"partNumber": "P3", "serialNumber": "S3"})
+    tmp_db.commit()
+    db.delete_components_for_bike(tmp_db, FAKE_BIKE_ID)
+    tmp_db.commit()
+    assert db.query_components(tmp_db, FAKE_BIKE_ID, None) == []
+    # other bike's rows untouched
+    assert len(db.query_components(tmp_db, "other-bike", None)) == 1
+
+
+# --- Sync-log status set + note ---
+
+
+@pytest.mark.parametrize(
+    "status,expect_settled",
+    [
+        ("ok", True),
+        ("unavailable", True),
+        ("empty", True),
+        ("error", False),
+        ("auth_error", False),
+    ],
+)
+def test_get_last_sync_time_counts_settled_statuses(tmp_db, status, expect_settled):
+    db.log_sync(tmp_db, "service", status, 0, "note")
+    result = db.get_last_sync_time(tmp_db, "service")
+    assert (result is not None) is expect_settled
+
+
+def test_get_last_sync_time_picks_latest_row(tmp_db):
+    """Latest settled row wins even if an earlier ok exists."""
+    db.log_sync(tmp_db, "service", "ok", 1)
+    db.log_sync(tmp_db, "service", "unavailable", 0, "needs euda")
+    result = db.get_last_sync_time(tmp_db, "service")
+    assert result is not None  # the unavailable row still counts as "checked"
+
+
+def test_last_sync_note_returns_reason_when_not_ok(tmp_db):
+    db.log_sync(tmp_db, "service", "unavailable", 0, "needs euda client")
+    note = db.last_sync_note(tmp_db, "service")
+    assert note == ("unavailable", "needs euda client")
+
+
+def test_last_sync_note_none_when_ok(tmp_db):
+    """A genuine ok result must not produce a 'why empty' note (don't cry wolf)."""
+    db.log_sync(tmp_db, "service", "ok", 0)
+    assert db.last_sync_note(tmp_db, "service") is None
+
+
+def test_last_sync_note_uses_latest_row(tmp_db):
+    """An ok after an earlier unavailable clears the note."""
+    db.log_sync(tmp_db, "components", "unavailable", 0, "old reason")
+    db.log_sync(tmp_db, "components", "ok", 3)
+    assert db.last_sync_note(tmp_db, "components") is None
+
+
+def test_last_sync_note_no_rows(tmp_db):
+    assert db.last_sync_note(tmp_db, "service") is None
