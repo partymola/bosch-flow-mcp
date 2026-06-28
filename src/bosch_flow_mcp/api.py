@@ -85,8 +85,7 @@ def get(path: str, base: str = MOBILE_API_BASE, retries: int = 3) -> dict | list
             if e.code == 403:
                 logger.info("Forbidden (403) for %s - token not accepted by this endpoint", path)
                 raise BoschForbiddenError(
-                    f"Forbidden (403) for {path}: this sign-in's client is not accepted "
-                    f"by {base}"
+                    f"Forbidden (403) for {path}: this sign-in's client is not accepted by {base}"
                 ) from e
 
             if e.code == 404:
