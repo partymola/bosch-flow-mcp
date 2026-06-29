@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Ride activity tools: `bosch_get_activities` (per-ride summaries over a date range - distance, elevation gain/loss, avg/max speed, cadence, measured rider power, calories, rider-vs-motor energy share, assist-mode distance split (metres per mode), CO2, ABS/brake events) and `bosch_get_activity_detail` (per-point GPS/speed/elevation/cadence/power track). Live reads from the rider-activity API (`obc-rider-activity.prod.connected-biking.cloud`), reachable with the standard `one-bike-app` sign-in (scope `activity:user:read`) - no EU Data Act registration needed.
 - An unofficial / not-affiliated / read-only disclaimer in the README and the `auth` flow.
 
 ## [0.1.0] - 2026-04-26

@@ -5,7 +5,8 @@
 [![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
 
 MCP server for Bosch eBike Flow (Smart System / BES3). Tracks battery health, charge cycles,
-component versions, service history, and live state-of-charge.
+component versions, service history, live state-of-charge, and per-ride activity data
+(distance, elevation, power, assist-mode, CO2).
 
 ## Disclaimer
 
@@ -35,6 +36,9 @@ interoperability.
 - Service book history and software update log (EU Data Act client only)
 - Live state-of-charge from ConnectModule via mobile API
 - Battery capacity tester results (EU Data Act client only)
+- Per-ride activities: distance, elevation, speed, cadence, measured rider power, calories,
+  rider-vs-motor energy share, assist-mode split, CO2, ABS events, plus a per-point
+  GPS/speed/elevation/power track
 - Auto-sync on demand - tools fetch fresh data without a cron job
 
 ## Requirements
@@ -100,6 +104,7 @@ Then ask Claude questions like:
 - "Show me charge cycle trends by month"
 - "What firmware version is my drive unit on?"
 - "Have there been any service records for my bike?"
+- "How far and how hard were my rides this week?"
 
 ## Available tools
 
@@ -115,12 +120,15 @@ Then ask Claude questions like:
 | `bosch_get_service_records` | Service book entries (EU Data Act client only) |
 | `bosch_get_software_updates` | Software update history (EU Data Act client only) |
 | `bosch_battery_trends` | Charge cycle and energy trends by period |
+| `bosch_get_activities` | Per-ride summaries (distance, elevation, power, mode, CO2) over a date range |
+| `bosch_get_activity_detail` | Per-point track for one ride (GPS/speed/elevation/cadence/power) |
 
 ## API credits
 
 This server uses the **Bosch Mobile API** (`obc-rider-profile.prod.connected-biking.cloud`)
-as the primary data source, with optional **Data Act API** (`api.bosch-ebike.com`) support
-for additional endpoints.
+as the primary data source, the **rider-activity API**
+(`obc-rider-activity.prod.connected-biking.cloud`) for per-ride data, and optional
+**Data Act API** (`api.bosch-ebike.com`) support for additional endpoints.
 
 Authentication uses the `one-bike-app` public client (the same OAuth client as the Bosch
 eBike Flow mobile app). The auth approach was documented by the

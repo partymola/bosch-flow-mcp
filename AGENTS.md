@@ -3,8 +3,9 @@
 ## What this is
 
 MCP server for Bosch eBike Flow (Smart System / BES3). Provides battery health tracking,
-charge cycle history, component registrations, service records, and live state-of-charge
-via the EU Data Act API and Bosch Mobile App API.
+charge cycle history, component registrations, service records, live state-of-charge, and
+per-ride activity data (distance/elevation/power/mode/CO2) via the EU Data Act API, the
+Bosch Mobile App API, and the rider-activity API.
 
 Licensed GPLv3+. Published at partymola/bosch-flow-mcp.
 
@@ -56,8 +57,11 @@ Capacity sync requires components to be synced first (needs part+serial numbers)
 | `bosch_get_service_records` | Service book history |
 | `bosch_get_software_updates` | Software update history |
 | `bosch_battery_trends` | Battery health trends (weekly/monthly/quarterly) |
+| `bosch_get_activities` | Per-ride summaries over a date range (live, no cache) |
+| `bosch_get_activity_detail` | Per-point GPS/speed/elevation/cadence/power track for one ride (live) |
 
-All `get_*` tools auto-sync if data is stale (no cron job needed).
+Cached `get_*` tools auto-sync if data is stale (no cron job needed). `bosch_get_soc`,
+`bosch_get_activities`, and `bosch_get_activity_detail` are live reads (no cache).
 
 ## Data safety - CRITICAL for public repo
 

@@ -41,6 +41,14 @@ MOBILE_BIKE_PROFILE_LIST = "/v1/bike-profile"
 MOBILE_BIKE_PROFILE_V2 = "/v2/bike-profile/{bike_id}"
 MOBILE_STATE_OF_CHARGE = "/v1/state-of-charge/{bike_id}"
 
+# --- Activity API (rider-activity service) ---
+# Per-ride data, served on its own host. Reachable with the standard one-bike-app
+# token (scope activity:user:read, audience obc-rider-activity) - NOT the Data Act
+# tier. (The BES3_ACTIVITIES path below is Data-Act-gated and 403s a standard token.)
+ACTIVITY_API_BASE = "https://obc-rider-activity.prod.connected-biking.cloud"
+ACTIVITY_LIST = "/v1/activity"
+ACTIVITY_DETAIL = "/v1/activity/{activity_id}/detail"
+
 # --- BES3 (Smart System) Data Act endpoint paths ---
 BES3_BIKES = "/bike-profile/smart-system/v1/bikes"
 BES3_BIKE = "/bike-profile/smart-system/v1/bikes/{bike_id}"

@@ -25,6 +25,7 @@ def main() -> None:
     if len(sys.argv) == 1:
         # Import tools to register @mcp.tool() decorators
         from .tools import (  # noqa: F401
+            activity_tools,
             analysis_tools,
             battery_tools,
             bike_tools,

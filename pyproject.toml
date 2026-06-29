@@ -24,6 +24,9 @@ classifiers = [
 dependencies = [
     "mcp>=1.6.0",
     "anyio>=4.0",
+    # ZoneInfo needs an IANA tz database; ship one so activity local-date
+    # conversion works on platforms without system tz data (e.g. Windows).
+    "tzdata>=2024.1",
 ]
 
 [project.scripts]
