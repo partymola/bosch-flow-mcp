@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-11
+
 ### Changed
 
 - Sync requests are now routed by the active token's client instead of trying both APIs: a `euda` client uses the EU Data Act API, the standard `one-bike-app` sign-in uses the mobile app API (each Keycloak client is only accepted by its own host).
@@ -38,5 +40,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Live state-of-charge via the ConnectModule mobile API.
 - Pre-commit hook (`scripts/check-no-data.sh`) blocking commit of databases, tokens, and other secrets.
 
-[Unreleased]: https://github.com/partymola/bosch-flow-mcp/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/partymola/bosch-flow-mcp/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/partymola/bosch-flow-mcp/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/partymola/bosch-flow-mcp/releases/tag/v0.1.0
