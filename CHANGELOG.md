@@ -7,9 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-11
+
 ### Added
 
 - `bosch-flow-mcp --version` prints the installed package version.
+
+### Packaging
+
+- Published to PyPI (`pip install bosch-flow-mcp` / `uvx bosch-flow-mcp`) via GitHub Actions Trusted Publishing.
 
 ## [0.2.0] - 2026-07-11
 
@@ -44,6 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Live state-of-charge via the ConnectModule mobile API.
 - Pre-commit hook (`scripts/check-no-data.sh`) blocking commit of databases, tokens, and other secrets.
 
-[Unreleased]: https://github.com/partymola/bosch-flow-mcp/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/partymola/bosch-flow-mcp/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/partymola/bosch-flow-mcp/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/partymola/bosch-flow-mcp/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/partymola/bosch-flow-mcp/releases/tag/v0.1.0

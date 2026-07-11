@@ -28,7 +28,7 @@ interoperability.
   time** if Bosch alters their systems.
 - **You are responsible** for ensuring your use complies with Bosch's and SingleKey ID's
   terms of service in your jurisdiction.
-- Provided **with no warranty** under GPLv3+ (see [LICENSE](LICENSE)). Use at your own risk.
+- Provided **with no warranty** under GPLv3+ (see [LICENSE](https://github.com/partymola/bosch-flow-mcp/blob/main/LICENSE)). Use at your own risk.
 
 ## Features
 
@@ -50,6 +50,12 @@ interoperability.
 - A BES3 Smart System eBike registered in the app
 
 ## Install
+
+```bash
+pip install bosch-flow-mcp
+```
+
+Or run it without installing with `uvx bosch-flow-mcp`. For development from a clone:
 
 ```bash
 git clone https://github.com/partymola/bosch-flow-mcp
@@ -166,8 +172,8 @@ project.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, the test workflow, and the pre-commit hook. Changes are tracked in [CHANGELOG.md](CHANGELOG.md).
+See [CONTRIBUTING.md](https://github.com/partymola/bosch-flow-mcp/blob/main/CONTRIBUTING.md) for development setup, the test workflow, and the pre-commit hook. Changes are tracked in [CHANGELOG.md](https://github.com/partymola/bosch-flow-mcp/blob/main/CHANGELOG.md).
 
 ## License
 
-GPLv3+. See [LICENSE](LICENSE).
+GPLv3+. See [LICENSE](https://github.com/partymola/bosch-flow-mcp/blob/main/LICENSE).
