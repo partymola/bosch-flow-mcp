@@ -4,11 +4,13 @@ Usage:
     bosch-flow-mcp               Start MCP server (stdio transport)
     bosch-flow-mcp auth          Interactive OAuth setup (PKCE with one-bike-app)
     bosch-flow-mcp sync          Sync all data to local cache
+    bosch-flow-mcp --version     Print the installed package version
 """
 
 import argparse
 import logging
 import sys
+from importlib.metadata import version
 
 # Configure logging to stderr (stdout is reserved for JSON-RPC)
 logging.basicConfig(
@@ -40,6 +42,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         prog="bosch-flow-mcp",
         description="Bosch eBike Flow MCP server",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"bosch-flow-mcp {version('bosch-flow-mcp')}",
     )
     subparsers = parser.add_subparsers(dest="cmd")
 

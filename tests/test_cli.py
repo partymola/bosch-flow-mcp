@@ -2,7 +2,19 @@
 
 from unittest.mock import patch
 
+import pytest
+
 from bosch_flow_mcp import cli
+
+
+def test_cli_version_flag(capsys, monkeypatch):
+    """--version prints the package version and exits cleanly."""
+    monkeypatch.setattr("sys.argv", ["bosch-flow-mcp", "--version"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "bosch-flow-mcp" in out
 
 
 def test_cli_sync_prints_unavailable_message(capsys, monkeypatch):

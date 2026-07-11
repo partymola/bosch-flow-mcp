@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `bosch-flow-mcp --version` prints the installed package version.
+
 ## [0.2.0] - 2026-07-11
 
 ### Changed

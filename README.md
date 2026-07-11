@@ -101,6 +101,8 @@ Fetches your data and stores it locally. The source depends on your sign-in:
 You can also use the `bosch_sync` MCP tool, or rely on automatic sync (each `get_*` tool
 triggers a sync if data is stale).
 
+Run `bosch-flow-mcp --version` to print the installed package version.
+
 ## Register with Claude Code
 
 ```bash
