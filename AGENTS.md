@@ -1,81 +1,34 @@
-# bosch-flow-mcp
+# bosch-flow-mcp - agent guide
 
-## What this is
+`CLAUDE.md` symlinks to this file. It orients AI agents and contributors working *in* the code, and deliberately does not repeat the user-facing docs:
 
-MCP server for Bosch eBike Flow (Smart System / BES3). Provides battery health tracking,
-charge cycle history, component registrations, service records, live state-of-charge, and
-per-ride activity data (distance/elevation/power/mode/CO2) via the EU Data Act API, the
-Bosch Mobile App API, and the rider-activity API.
+- **What it is, install, auth, sync, tools, config, usage** -> [README.md](README.md)
+- **Dev environment, running tests, pre-commit hook, PR & security process** -> [CONTRIBUTING.md](CONTRIBUTING.md)
 
-Licensed GPLv3+. Published at partymola/bosch-flow-mcp.
+**This is a public open-source repository.** Read the Data Safety Rules before committing.
 
-## Auth
+## Data Safety Rules
 
-```bash
-.venv/bin/bosch-flow-mcp auth
-```
+The `scripts/check-no-data.sh` pre-commit hook blocks `*.db`, `*tokens.json`, and secret patterns (install per [CONTRIBUTING.md](CONTRIBUTING.md)). With the hook installed most of this is automatic; use the list when it isn't yet installed or when adding test data:
 
-Uses the `one-bike-app` public client with PKCE (same as the Bosch Flow mobile app).
-Browser opens to Bosch login, but the redirect URI is an iOS deep link (`onebikeapp-ios://...`).
+1. `config/bosch_tokens.json`, `config/bosch_mobile_tokens.json`, and `bosch_flow.db` must stay gitignored - verify `git status` shows no token/db files
+2. Test fixtures (`tests/conftest.py`) use fictional UUIDs (`00000000-0000-0000-0000-000000000001`) and round numbers only - no real bike data ever enters tests
+3. `config/bosch_config.example.json` (committed) holds only the public EUDA client ID and blank fields - confirm no real credentials
 
-**Steps:**
-1. Open browser DevTools (F12) > Network tab BEFORE clicking the auth URL
-2. Log in with your Bosch Flow account
-3. Browser shows a failed redirect - find `oauth2redirect` in the Network tab
-4. Copy the full URL (right-click > Copy URL)
-5. Paste it at the prompt
+## Architecture
 
-Tokens saved to `config/bosch_tokens.json` (0600). Expires in ~2 hours, auto-refreshed via
-`offline_access` scope.
+- **Entry point**: `src/bosch_flow_mcp/cli.py` - routes `auth`/`sync` subcommands or starts the MCP stdio server
+- **FastMCP**: `mcp_instance.py` creates the shared instance
+- **Auth**: `auth.py` - two flows. The default `one-bike-app` PKCE flow (iOS deep-link redirect, DevTools copy-paste). If `config/bosch_config.json` holds a EUDA `client_id`, auth switches to the EUDA flow (plain `localhost:4200` callback). `token_is_euda()` reads the token file fresh each call, so routing follows the current sign-in without a restart
+- **API**: `api.py` - GET wrapper with thread-safe token refresh (5-min expiry buffer) and a typed exception hierarchy (`BoschAuthError`, `BoschRateLimitError`, `BoschAPIError`, `BoschForbiddenError`)
+- **Sync**: `tools/sync_tools.py` - routes each data type by the token's client. Standard mobile sign-in reads bikes/batteries/components/firmware/SoC; `service`/`software_updates`/`capacity` need the EUDA client and otherwise report `unavailable` (not a silent empty). Non-EU EUDA accounts report `empty`/`euda_empty` with remedy text
+- **DB**: `db.py` - SQLite, default `bosch_flow.db` in the package root (`BOSCH_FLOW_MCP_DB_PATH` to override; `BOSCH_FLOW_MCP_CONFIG_DIR` for the config dir)
+- **Tools**: `tools/` - `@mcp.tool` definitions grouped by domain (bike, battery, component, service, analysis, activity, sync). Cached `get_*` tools auto-sync if stale; `bosch_get_soc`, `bosch_get_activities`, and `bosch_get_activity_detail` are live reads
 
-**Optional EUDA credentials:** If you register at the Bosch Data Act portal, place your
-credentials in `config/bosch_config.json` for additional Data Act API endpoints (capacity
-testers, service book, etc.).
+## Key invariants
 
-## Sync
-
-```bash
-.venv/bin/bosch-flow-mcp sync                     # all types
-.venv/bin/bosch-flow-mcp sync --types bikes,batteries
-```
-
-Data types: `bikes`, `batteries`, `components`, `service`, `software_updates`, `capacity`
-
-Capacity sync requires components to be synced first (needs part+serial numbers).
-
-## MCP tools
-
-| Tool | Description |
-|------|-------------|
-| `bosch_sync` | Sync all or specific data types |
-| `bosch_get_bikes` | List registered bikes |
-| `bosch_get_bike` | Single bike details |
-| `bosch_get_batteries` | Battery snapshots (history or latest) |
-| `bosch_get_soc` | Live state-of-charge from ConnectModule |
-| `bosch_get_capacity` | Battery capacity tester results |
-| `bosch_get_components` | Component registrations (drive unit, display, etc.) |
-| `bosch_get_service_records` | Service book history |
-| `bosch_get_software_updates` | Software update history |
-| `bosch_battery_trends` | Battery health trends (weekly/monthly/quarterly) |
-| `bosch_get_activities` | Per-ride summaries over a date range (live, no cache) |
-| `bosch_get_activity_detail` | Per-point GPS/speed/elevation/cadence/power track for one ride (live) |
-
-Cached `get_*` tools auto-sync if data is stale (no cron job needed). `bosch_get_soc`,
-`bosch_get_activities`, and `bosch_get_activity_detail` are live reads (no cache).
-
-## Data safety - CRITICAL for public repo
-
-The `scripts/check-no-data.sh` pre-commit hook blocks `*.db`, `*tokens.json`, and secrets patterns. Install it: `ln -sf ../../scripts/check-no-data.sh .git/hooks/pre-commit`. With the hook installed, most of the checks below are enforced automatically; use the list when the hook is not yet installed or when adding new test data.
-
-1. Verify `config/bosch_tokens.json`, `config/bosch_mobile_tokens.json`, `bosch_flow.db` are gitignored
-2. Check `.gitignore` entries are actually working: `git status` should show no token/db files
-3. Test fixtures in `tests/conftest.py` use fictional UUIDs (`00000000-0000-0000-0000-000000000001`) and round numbers only - no real bike data ever enters tests
-4. `config/bosch_config.example.json` contains only the public EUDA client ID and blank fields - this IS committed to the repo, confirm it has no real credentials
-
-## DB location
-
-Default: `bosch_flow.db` in the package root (same dir as `pyproject.toml`).
-Override: `BOSCH_FLOW_MCP_DB_PATH=/path/to/custom.db`
+- **Capacity sync depends on components** - it needs part + serial numbers, so `components` must be synced first
+- **Route by token client, never call both hosts blindly** - the sync layer picks the host from the authenticated client_id
 
 ## Running tests
 
@@ -83,18 +36,4 @@ Override: `BOSCH_FLOW_MCP_DB_PATH=/path/to/custom.db`
 .venv/bin/python -m pytest tests/ -v
 ```
 
-Tests use temporary SQLite databases (`tmp_path` fixture) and never touch the real DB.
-All tests are offline - no real API calls, no real tokens needed.
-
-## Environment
-
-```
-BOSCH_FLOW_MCP_DB_PATH         Override DB file path
-BOSCH_FLOW_MCP_CONFIG_DIR      Override config directory (tokens, client config)
-```
-
-## Registering with Claude Code
-
-```bash
-claude mcp add -s user bosch-flow -- /path/to/bosch-flow-mcp/.venv/bin/bosch-flow-mcp
-```
+Tests use temporary SQLite databases (`tmp_path` fixture) and never touch the real DB. All tests are offline - no real API calls or tokens needed.
