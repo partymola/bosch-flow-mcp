@@ -74,11 +74,18 @@ can't open. Copy the full redirect URL from DevTools (right-click > Copy URL on 
 
 Tokens are saved to `config/bosch_tokens.json` and auto-refresh via `offline_access`.
 
+**EU Data Act users:** if you have registered your own `euda` client and placed its ID in
+`config/bosch_config.json`, `auth` uses that instead - it opens the browser and completes
+automatically through a local `http://localhost:4200` callback, with no DevTools step.
+
 ## Sync
 
 ```bash
-.venv/bin/bosch-flow-mcp sync
+.venv/bin/bosch-flow-mcp sync                     # all data types
+.venv/bin/bosch-flow-mcp sync --types bikes,batteries
 ```
+
+Data types: `bikes`, `batteries`, `components`, `service`, `software_updates`, `capacity`.
 
 Fetches your data and stores it locally. The source depends on your sign-in:
 
@@ -136,6 +143,24 @@ eBike Flow mobile app). The auth approach was documented by the
 [marq24/ha-bosch-ebike-flow](https://github.com/marq24/ha-bosch-ebike-flow) Home Assistant
 integration and the [open-ebike/open-ebike-backend](https://github.com/open-ebike/open-ebike-backend)
 project.
+
+## Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BOSCH_FLOW_MCP_DB_PATH` | `bosch_flow.db` in the package root | SQLite database path |
+| `BOSCH_FLOW_MCP_CONFIG_DIR` | `config/` in the package root | Directory for tokens and client config |
+
+## Data safety
+
+- OAuth tokens are saved with `0600` permissions; the token files and `bosch_flow.db` are gitignored.
+- A pre-commit hook (`scripts/check-no-data.sh`) blocks committing databases, token files, and secrets. Install it after cloning:
+
+  ```bash
+  ln -sf ../../scripts/check-no-data.sh .git/hooks/pre-commit
+  ```
+
+- Tests use temporary SQLite databases and fictional identifiers - no real bike or account data ever enters the repo.
 
 ## Contributing
 

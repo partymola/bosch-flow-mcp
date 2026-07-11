@@ -36,7 +36,7 @@ testers, service book, etc.).
 
 ```bash
 .venv/bin/bosch-flow-mcp sync                     # all types
-.venv/bin/bosch-flow-mcp sync --types bikes batteries
+.venv/bin/bosch-flow-mcp sync --types bikes,batteries
 ```
 
 Data types: `bikes`, `batteries`, `components`, `service`, `software_updates`, `capacity`
