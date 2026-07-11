@@ -5,6 +5,7 @@
 [![CI](https://github.com/partymola/bosch-flow-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/partymola/bosch-flow-mcp/actions/workflows/ci.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
+[![PyPI](https://img.shields.io/pypi/v/bosch-flow-mcp)](https://pypi.org/project/bosch-flow-mcp/)
 [![Glama MCP Server](https://glama.ai/mcp/servers/partymola/bosch-flow-mcp/badges/score.svg)](https://glama.ai/mcp/servers/partymola/bosch-flow-mcp)
 
 MCP server for Bosch eBike Flow (Smart System / BES3). Tracks battery health, charge cycles,
