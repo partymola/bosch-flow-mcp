@@ -1,5 +1,7 @@
 # bosch-flow-mcp
 
+<!-- mcp-name: io.github.partymola/bosch-flow-mcp -->
+
 [![CI](https://github.com/partymola/bosch-flow-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/partymola/bosch-flow-mcp/actions/workflows/ci.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
