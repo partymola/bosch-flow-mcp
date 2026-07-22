@@ -11,7 +11,7 @@
 
 The `scripts/check-no-data.sh` pre-commit hook blocks `*.db`, `*tokens.json`, and secret patterns (install per [CONTRIBUTING.md](CONTRIBUTING.md)). With the hook installed most of this is automatic; use the list when it isn't yet installed or when adding test data:
 
-1. `config/bosch_tokens.json`, `config/bosch_mobile_tokens.json`, and `bosch_flow.db` must stay gitignored - verify `git status` shows no token/db files
+1. `config/bosch_tokens.json` and `bosch_flow.db` must stay gitignored - verify `git status` shows no token/db files
 2. Test fixtures (`tests/conftest.py`) use fictional UUIDs (`00000000-0000-0000-0000-000000000001`) and round numbers only - no real bike data ever enters tests
 3. `config/bosch_config.example.json` (committed) holds only the public EUDA client ID and blank fields - confirm no real credentials
 
