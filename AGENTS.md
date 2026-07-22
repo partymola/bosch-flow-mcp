@@ -22,7 +22,7 @@ The `scripts/check-no-data.sh` pre-commit hook blocks `*.db`, `*tokens.json`, an
 - **Auth**: `auth.py` - two flows. The default `one-bike-app` PKCE flow (iOS deep-link redirect, DevTools copy-paste). If `config/bosch_config.json` holds a EUDA `client_id`, auth switches to the EUDA flow (plain `localhost:4200` callback). `token_is_euda()` reads the token file fresh each call, so routing follows the current sign-in without a restart
 - **API**: `api.py` - GET wrapper with thread-safe token refresh (5-min expiry buffer) and a typed exception hierarchy (`BoschAuthError`, `BoschRateLimitError`, `BoschAPIError`, `BoschForbiddenError`)
 - **Sync**: `tools/sync_tools.py` - routes each data type by the token's client. Standard mobile sign-in reads bikes/batteries/components/firmware/SoC; `service`/`software_updates`/`capacity` need the EUDA client and otherwise report `unavailable` (not a silent empty). Non-EU EUDA accounts report `empty`/`euda_empty` with remedy text
-- **DB**: `db.py` - SQLite, default `bosch_flow.db` in the package root (`BOSCH_FLOW_MCP_DB_PATH` to override; `BOSCH_FLOW_MCP_CONFIG_DIR` for the config dir)
+- **DB**: `db.py` - SQLite, default `bosch_flow.db` in the package root (`BOSCH_FLOW_MCP_DB_PATH` to override; `BOSCH_FLOW_MCP_CONFIG_DIR` for the config dir). Besides the per-domain data tables, a `sync_log` table records each sync's timestamp, data type, status, and rows added - query it when data looks stale
 - **Tools**: `tools/` - `@mcp.tool` definitions grouped by domain (bike, battery, component, service, analysis, activity, sync). Cached `get_*` tools auto-sync if stale; `bosch_get_soc`, `bosch_get_activities`, and `bosch_get_activity_detail` are live reads
 
 ## Key invariants
@@ -30,10 +30,6 @@ The `scripts/check-no-data.sh` pre-commit hook blocks `*.db`, `*tokens.json`, an
 - **Capacity sync depends on components** - it needs part + serial numbers, so `components` must be synced first
 - **Route by token client, never call both hosts blindly** - the sync layer picks the host from the authenticated client_id
 
-## Running tests
+## Test conventions
 
-```bash
-.venv/bin/python -m pytest tests/ -v
-```
-
-Tests use temporary SQLite databases (`tmp_path` fixture) and never touch the real DB. All tests are offline - no real API calls or tokens needed.
+Tests are fully offline - no real API calls or tokens - and use temporary SQLite databases (`tmp_path` fixture), never the real DB. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to run them.
