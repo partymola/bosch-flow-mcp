@@ -1,5 +1,5 @@
-"""Shared FastMCP instance for the Bosch Flow MCP server."""
+"""Shared MCP server instance for the Bosch Flow MCP server."""
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
-mcp = FastMCP("bosch-flow-mcp")
+mcp = MCPServer("bosch-flow-mcp")

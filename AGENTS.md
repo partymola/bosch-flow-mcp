@@ -18,7 +18,7 @@ The `scripts/check-no-data.sh` pre-commit hook blocks `*.db`, `*tokens.json`, an
 ## Architecture
 
 - **Entry point**: `src/bosch_flow_mcp/cli.py` - routes `auth`/`sync` subcommands or starts the MCP stdio server
-- **FastMCP**: `mcp_instance.py` creates the shared instance
+- **MCP server**: `mcp_instance.py` creates the shared `MCPServer` instance
 - **Auth**: `auth.py` - two flows. The default `one-bike-app` PKCE flow (iOS deep-link redirect, DevTools copy-paste). If `config/bosch_config.json` holds a EUDA `client_id`, auth switches to the EUDA flow (plain `localhost:4200` callback). `token_is_euda()` reads the token file fresh each call, so routing follows the current sign-in without a restart
 - **API**: `api.py` - GET wrapper with thread-safe token refresh (5-min expiry buffer) and a typed exception hierarchy (`BoschAuthError`, `BoschRateLimitError`, `BoschAPIError`, `BoschForbiddenError`)
 - **Sync**: `tools/sync_tools.py` - routes each data type by the token's client. Standard mobile sign-in reads bikes/batteries/components/firmware/SoC; `service`/`software_updates`/`capacity` need the EUDA client and otherwise report `unavailable` (not a silent empty). Non-EU EUDA accounts report `empty`/`euda_empty` with remedy text
