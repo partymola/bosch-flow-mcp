@@ -89,16 +89,25 @@ def _parse_single_date(date_str: str | None, default: date, is_end: bool) -> dat
     if m:
         return date.today() - timedelta(days=int(m.group(1)))
 
-    if re.match(r"^\d{4}-\d{2}$", date_str):
-        year, month = int(date_str[:4]), int(date_str[5:7])
-        if is_end:
-            if month == 12:
-                return date(year + 1, 1, 1) - timedelta(days=1)
-            return date(year, month + 1, 1) - timedelta(days=1)
-        return date(year, month, 1)
+    # The regexes match the shape; the constructors reject the value. A month
+    # of 13 or a 30th of February passes the pattern and raises a bare
+    # ValueError from the stdlib, which is the likelier slip of the two and
+    # was reaching the caller as "Unexpected error".
+    try:
+        if re.match(r"^\d{4}-\d{2}$", date_str):
+            year, month = int(date_str[:4]), int(date_str[5:7])
+            if is_end:
+                if month == 12:
+                    return date(year + 1, 1, 1) - timedelta(days=1)
+                return date(year, month + 1, 1) - timedelta(days=1)
+            return date(year, month, 1)
 
-    if re.match(r"^\d{4}-\d{2}-\d{2}$", date_str):
-        return date.fromisoformat(date_str)
+        if re.match(r"^\d{4}-\d{2}-\d{2}$", date_str):
+            return date.fromisoformat(date_str)
+    except ValueError as e:
+        raise InvalidDateError(
+            f"Invalid date '{date_str}'. Use YYYY-MM-DD, YYYY-MM, or Nd (e.g. '30d')."
+        ) from e
 
     raise InvalidDateError(
         f"Invalid date '{date_str}'. Use YYYY-MM-DD, YYYY-MM, or Nd (e.g. '30d')."
@@ -140,4 +149,7 @@ def require_auth(func):
             logger.error("Tool %s failed: %s", func.__name__, type(e).__name__)
             return json.dumps({"error": f"Unexpected error ({type(e).__name__})."})
 
+    # Named marker rather than functools.wraps' __wrapped__, so the coverage
+    # test pins that THIS decorator is applied, not merely that something is.
+    wrapper.__requires_auth__ = True
     return wrapper

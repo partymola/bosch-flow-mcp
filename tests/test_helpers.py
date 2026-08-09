@@ -154,7 +154,6 @@ def test_every_tool_is_gated():
     import pkgutil
 
     import bosch_flow_mcp.tools as tools_pkg
-    from bosch_flow_mcp.helpers import require_auth
 
     ungated = []
     for module_info in pkgutil.iter_modules(tools_pkg.__path__):
@@ -163,9 +162,29 @@ def test_every_tool_is_gated():
             obj = getattr(module, name)
             if not (callable(obj) and name.startswith("bosch_")):
                 continue
-            # functools.wraps sets __wrapped__ on the gated function.
-            if getattr(obj, "__wrapped__", None) is None:
+            # The marker require_auth sets, not functools.wraps' __wrapped__:
+            # any decorator sets that, so a refactor adding a timing wrapper
+            # while dropping the gate would have gone unnoticed.
+            if not getattr(obj, "__requires_auth__", False):
                 ungated.append(f"{module_info.name}.{name}")
 
     assert ungated == [], f"tools not wrapped in require_auth: {ungated}"
-    assert require_auth is not None
+
+
+class TestDateValuesThatPassTheShapeCheck:
+    """A month of 13 passes the regex and fails in the constructor.
+
+    That is a likelier model slip than a word, and it was reaching the
+    caller as "Unexpected error (ValueError)" - no guidance, no retry.
+    """
+
+    @pytest.mark.parametrize(
+        "bad", ["2026-13-01", "2026-02-30", "2026-13", "2026-00-01", "last week"]
+    )
+    def test_it_keeps_the_guidance(self, bad):
+        from bosch_flow_mcp.helpers import InvalidDateError, parse_date
+
+        with pytest.raises(InvalidDateError) as exc_info:
+            parse_date(bad)
+        assert "YYYY-MM-DD" in str(exc_info.value)
+        assert bad in str(exc_info.value)

@@ -349,6 +349,34 @@ class TestNoRequestPathReachesTheSyncLogOrAModel:
         assert results["bikes"]["status"] == "rate_limited"
         assert rows and rows[0][0] == "error"
 
+    def test_a_database_that_cannot_take_the_row_does_not_end_the_run(self, tmp_path, monkeypatch):
+        """Writing the row is itself a database write.
+
+        A locked database - a CLI sync alongside an MCP session - raised
+        here, escaping the very catch-all that exists to keep the remaining
+        types going, so the rest of the sync was never attempted.
+        """
+        from bosch_flow_mcp import api
+        from bosch_flow_mcp.tools import sync_tools as st
+
+        monkeypatch.setenv("BOSCH_FLOW_MCP_DB_PATH", str(tmp_path / "test.db"))
+        attempted = []
+
+        def failing_get(path, base=None, retries=3):
+            attempted.append(path)
+            raise api.BoschAuthError("token rejected")
+
+        with (
+            patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=failing_get),
+            patch.object(st.db, "log_sync", side_effect=RuntimeError("database is locked")),
+        ):
+            results = run_sync(["bikes", "batteries"])
+
+        # Both types attempted, both reported, nothing escaped.
+        assert results["bikes"]["status"] == "auth_error"
+        assert "batteries" in results
+        assert len(attempted) >= 2
+
     def test_an_unanticipated_failure_leaves_a_row(self, tmp_path, monkeypatch):
         results, rows, _ = self._sync_with(KeyError("/etc/secret/path"), tmp_path, monkeypatch)
 

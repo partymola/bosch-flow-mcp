@@ -15,6 +15,7 @@ import base64
 import hashlib
 import json
 import logging
+import os
 import secrets
 import sys
 import threading
@@ -76,9 +77,23 @@ EUDA_REDIRECT_URI = f"http://localhost:{EUDA_CALLBACK_PORT}"
 
 
 def _save_json(path, data) -> None:
+    """Write a credential file owner-only from the outset.
+
+    Writing first and chmodding after left a new token world-readable for the
+    duration of the write. The mode on os.open applies only at creation, so
+    an existing file keeps what it had - hence the best-effort fchmod, which
+    must not be fatal: O_TRUNC has already emptied the file by then, and on a
+    refresh the old token is spent.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2))
-    path.chmod(0o600)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as handle:
+        if hasattr(os, "fchmod"):
+            try:
+                os.fchmod(handle.fileno(), 0o600)
+            except OSError:
+                logger.warning("Could not tighten permissions on %s", path.name)
+        handle.write(json.dumps(data, indent=2))
 
 
 def _load_json(path) -> dict:

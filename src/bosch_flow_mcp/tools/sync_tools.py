@@ -351,6 +351,26 @@ _SYNC_DISPATCH = {
 _ALL_TYPES = list(_SYNC_DISPATCH)
 
 
+def _record_failure(
+    conn, dtype: str, status: str, code: str, note: str, row_status: str = "error"
+) -> dict:
+    """Write the row, and never let writing it end the run.
+
+    A locked database - a CLI sync alongside an MCP session - raises here,
+    and that raise would escape the very catch-all that exists to keep the
+    remaining types going.
+
+    row_status is what lands in sync_log and defaults to "error", which is
+    not in _SETTLED_SYNC_STATUSES, so auto-sync retries on the next read. The
+    caller's own status can be finer-grained than that.
+    """
+    try:
+        db.log_sync(conn, dtype, row_status, 0, note)
+    except Exception:
+        logger.error("Could not record a failed sync of %s", dtype)
+    return {"status": status, "records": 0, "code": code, "message": note}
+
+
 def run_sync(data_types: list[str]) -> dict:
     """Run sync outside MCP context (for CLI/auto-sync use). Returns a per-type dict.
 
@@ -390,48 +410,34 @@ def run_sync(data_types: list[str]) -> dict:
             try:
                 count = sync_fn(conn, is_euda)
             except api.BoschAuthError:
-                # Logged like every other failure: a dead token is the one that
-                # will not clear itself, so it is the one worth finding later.
-                db.log_sync(conn, dtype, "auth_error", 0, AUTH_FAILED_MSG)
-                results[dtype] = {
-                    "status": "auth_error",
-                    "records": 0,
-                    "code": "auth",
-                    "message": AUTH_FAILED_MSG,
-                }
+                # A dead token is the failure that will not clear itself, so
+                # it is the one worth finding later.
+                results[dtype] = _record_failure(
+                    conn, dtype, "auth_error", "auth", AUTH_FAILED_MSG, row_status="auth_error"
+                )
                 continue
             except api.BoschRateLimitError:
-                db.log_sync(conn, dtype, "error", 0, RATE_LIMITED_MSG)
-                results[dtype] = {
-                    "status": "rate_limited",
-                    "records": 0,
-                    "code": "rate_limited",
-                    "message": RATE_LIMITED_MSG,
-                }
+                results[dtype] = _record_failure(
+                    conn, dtype, "rate_limited", "rate_limited", RATE_LIMITED_MSG
+                )
                 continue
             except api.BoschAPIError as e:
                 # Type only. These messages name the request path, which for
                 # capacity carries a part and a battery serial - and the row
                 # is read back by empty_data_note and served to the model on
                 # every later empty read.
-                note = f"{API_FAILED_MSG} ({type(e).__name__})"
-                db.log_sync(conn, dtype, "error", 0, note)
-                results[dtype] = {
-                    "status": "error",
-                    "records": 0,
-                    "code": "error",
-                    "message": note,
-                }
+                results[dtype] = _record_failure(
+                    conn, dtype, "error", "error", f"{API_FAILED_MSG} ({type(e).__name__})"
+                )
                 continue
             except Exception as e:
-                note = f"{API_FAILED_MSG} (unexpected {type(e).__name__})"
-                db.log_sync(conn, dtype, "error", 0, note)
-                results[dtype] = {
-                    "status": "error",
-                    "records": 0,
-                    "code": "error",
-                    "message": note,
-                }
+                results[dtype] = _record_failure(
+                    conn,
+                    dtype,
+                    "error",
+                    "error",
+                    f"{API_FAILED_MSG} (unexpected {type(e).__name__})",
+                )
                 continue
 
             # A euda token with no bikes is the non-EU trap: surface it for bikes AND

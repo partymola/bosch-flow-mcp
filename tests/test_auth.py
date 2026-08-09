@@ -1,6 +1,7 @@
 """Tests for auth token management."""
 
 import json
+import sys
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
@@ -458,3 +459,49 @@ class TestAStoredTokenWithoutOneIsARefusal:
         monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", path)
         with pytest.raises(auth_module.TokenRefused):
             auth_module.refresh_token()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits; Windows uses ACLs")
+class TestTheTokenFileIsNeverBrieflyReadable:
+    """Writing first and chmodding after left a new token world-readable.
+
+    Only for the duration of the write, and only at creation - but the
+    window is real, and the mode was untested either way.
+    """
+
+    def test_a_new_file_is_created_owner_only(self, tmp_path):
+        import os as os_module
+
+        seen = {}
+        real_open = os_module.open
+
+        def spy(path, flags, mode=0o777, **kwargs):
+            seen["mode"] = mode
+            return real_open(path, flags, mode, **kwargs)
+
+        target = tmp_path / "bosch_tokens.json"
+        with patch.object(auth_module.os, "open", spy):
+            auth_module._save_json(target, {"refresh_token": "fictional"})
+
+        assert oct(seen["mode"]) == "0o600"
+        assert oct(target.stat().st_mode & 0o777) == "0o600"
+
+    def test_an_existing_loose_file_is_tightened(self, tmp_path):
+        import os as os_module
+
+        target = tmp_path / "bosch_tokens.json"
+        target.write_text("{}")
+        os_module.chmod(target, 0o644)
+        auth_module._save_json(target, {"refresh_token": "fictional"})
+        assert oct(target.stat().st_mode & 0o777) == "0o600"
+
+    def test_a_failure_to_tighten_does_not_take_the_token_with_it(self, tmp_path):
+        def refuse(fd, mode):
+            raise PermissionError(1, "Operation not permitted")
+
+        target = tmp_path / "bosch_tokens.json"
+        target.write_text('{"refresh_token": "old"}')
+        with patch.object(auth_module.os, "fchmod", refuse):
+            auth_module._save_json(target, {"refresh_token": "rotated"})
+
+        assert json.loads(target.read_text())["refresh_token"] == "rotated"
