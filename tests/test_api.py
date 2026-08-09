@@ -7,6 +7,7 @@ from urllib.error import HTTPError, URLError
 import pytest
 
 import bosch_flow_mcp.api as api_module
+import bosch_flow_mcp.auth as auth_module
 from bosch_flow_mcp.api import (
     BoschAPIError,
     BoschAuthError,
@@ -85,3 +86,31 @@ def test_get_500_raises_api_error():
     with patch("urllib.request.urlopen", side_effect=err):
         with pytest.raises(BoschAPIError, match="500"):
             api_module.get("/some/path")
+
+
+class TestRefreshFailuresReachCallersClassified:
+    """api.get maps the two types refresh_token guarantees, and nothing else.
+
+    The messages are asserted by equality because they reach the MCP client
+    and are written to sync_log: the original can carry an absolute config
+    path, which is what interpolating it used to do.
+    """
+
+    def _get_with_refresh_raising(self, exc, monkeypatch):
+        monkeypatch.setattr(api_module, "refresh_token", MagicMock(side_effect=exc))
+        return api_module.get("/bikes")
+
+    def test_a_refusal_becomes_an_auth_error(self, monkeypatch):
+        with pytest.raises(api_module.BoschAuthError) as caught:
+            self._get_with_refresh_raising(
+                auth_module.TokenRefused("/etc/secret/path is missing"), monkeypatch
+            )
+        assert str(caught.value) == "Could not obtain an access token. Run: bosch-flow-mcp auth"
+
+    def test_a_network_failure_is_not_an_auth_error(self, monkeypatch):
+        with pytest.raises(api_module.BoschAPIError) as caught:
+            self._get_with_refresh_raising(
+                auth_module.RefreshNetworkError("/etc/secret/path timed out"), monkeypatch
+            )
+        assert not isinstance(caught.value, api_module.BoschAuthError)
+        assert str(caught.value) == "Network error. Check your connection."

@@ -384,6 +384,9 @@ def run_sync(data_types: list[str]) -> dict:
             try:
                 count = sync_fn(conn, is_euda)
             except api.BoschAuthError as e:
+                # Logged like every other failure: a dead token is the one that
+                # will not clear itself, so it is the one worth finding later.
+                db.log_sync(conn, dtype, "auth_error", 0, str(e))
                 results[dtype] = {
                     "status": "auth_error",
                     "records": 0,

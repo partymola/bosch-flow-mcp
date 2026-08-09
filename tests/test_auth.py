@@ -19,9 +19,14 @@ def reset_token_cache():
 
 
 def test_refresh_token_missing_file(tmp_path, monkeypatch):
-    """refresh_token raises RuntimeError if token file doesn't exist."""
+    """A missing token file is a refusal, not a network condition.
+
+    Both classes subclass RuntimeError, so asserting the base class alone
+    cannot tell them apart - and they lead to opposite advice: re-authorise,
+    or wait for the network.
+    """
     monkeypatch.setattr("bosch_flow_mcp.auth.BOSCH_TOKENS_PATH", tmp_path / "no_tokens.json")
-    with pytest.raises(RuntimeError, match="not configured"):
+    with pytest.raises(auth_module.TokenRefused, match="not configured"):
         auth_module.refresh_token()
 
 
@@ -90,7 +95,7 @@ def test_refresh_token_no_refresh_token_raises(tmp_path, monkeypatch):
     tokens_path.write_text(json.dumps(auth_module._tokens))
     monkeypatch.setattr("bosch_flow_mcp.auth.BOSCH_TOKENS_PATH", tokens_path)
 
-    with pytest.raises(RuntimeError, match="no refresh token"):
+    with pytest.raises(auth_module.TokenRefused, match="no refresh token"):
         auth_module.refresh_token()
 
 
@@ -160,3 +165,296 @@ def test_token_is_euda(token_as, client_id, expected):
 def test_token_is_euda_no_token_is_false():
     """No token file -> default one-bike-app -> not euda (and no crash on None)."""
     assert auth_module.token_is_euda() is False
+
+
+class TestTheRefreshBoundary:
+    """Every exit from refresh_token is one of two types, by construction.
+
+    Classifying by a list of exception types instead grades whatever nobody
+    listed as a dead credential, which is the answer that rewrites the token
+    file and spends a working refresh token.
+    """
+
+    def _refresh_with_worker_raising(self, exc, monkeypatch):
+        monkeypatch.setattr(auth_module, "_refresh_token", MagicMock(side_effect=exc))
+        return auth_module.refresh_token()
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            TimeoutError("bare timeout"),
+            ConnectionResetError("reset"),
+            UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid"),
+            KeyError("access_token"),
+            ValueError("unparseable"),
+            RuntimeError("something nobody classified"),
+        ],
+        ids=["timeout", "reset", "undecodable", "keyerror", "valueerror", "runtime"],
+    )
+    def test_an_unclassified_failure_becomes_a_network_error(self, exc, monkeypatch):
+        with pytest.raises(auth_module.RefreshNetworkError):
+            self._refresh_with_worker_raising(exc, monkeypatch)
+
+    def test_a_non_http_response_becomes_a_network_error(self, monkeypatch):
+        """http.client exceptions are not OSError, so they escaped every tuple."""
+        import http.client
+
+        with pytest.raises(auth_module.RefreshNetworkError):
+            self._refresh_with_worker_raising(http.client.BadStatusLine("garbage"), monkeypatch)
+
+    def test_a_refusal_passes_through_unchanged(self, monkeypatch):
+        with pytest.raises(auth_module.TokenRefused):
+            self._refresh_with_worker_raising(auth_module.TokenRefused("revoked"), monkeypatch)
+
+    def test_a_successful_refresh_is_not_swallowed(self, monkeypatch):
+        monkeypatch.setattr(auth_module, "_refresh_token", MagicMock(return_value="a-token"))
+        assert auth_module.refresh_token() == "a-token"
+
+
+class TestRefusalsAndNetworkConditions:
+    """Only a verdict on the credentials is a refusal."""
+
+    def _refresh_with_urlopen(self, urlopen, tmp_path, monkeypatch):
+        tokens = tmp_path / "bosch_tokens.json"
+        tokens.write_text(
+            json.dumps(
+                {"access_token": "a", "refresh_token": "r", "expiry": 0, "client_id": CLIENT_ID}
+            )
+        )
+        monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", tokens)
+        monkeypatch.setattr(auth_module.urllib.request, "urlopen", urlopen)
+        return auth_module.refresh_token()
+
+    def _http_error(self, code):
+        import io
+        import urllib.error
+
+        return urllib.error.HTTPError("https://example.invalid", code, "no", {}, io.BytesIO(b""))
+
+    def _responding(self, payload):
+        resp = MagicMock()
+        resp.read.return_value = payload
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = lambda *a: None
+        return MagicMock(return_value=resp)
+
+    def test_a_revoked_token_is_a_refusal(self, tmp_path, monkeypatch):
+        with pytest.raises(auth_module.TokenRefused):
+            self._refresh_with_urlopen(
+                MagicMock(side_effect=self._http_error(400)), tmp_path, monkeypatch
+            )
+
+    def test_a_rate_limit_is_not_a_refusal(self, tmp_path, monkeypatch):
+        with pytest.raises(auth_module.RefreshNetworkError):
+            self._refresh_with_urlopen(
+                MagicMock(side_effect=self._http_error(429)), tmp_path, monkeypatch
+            )
+
+    def test_a_server_side_failure_is_not_a_refusal(self, tmp_path, monkeypatch):
+        """A 5xx says the server could not answer, not that the grant is bad."""
+        with pytest.raises(auth_module.RefreshNetworkError):
+            self._refresh_with_urlopen(
+                MagicMock(side_effect=self._http_error(500)), tmp_path, monkeypatch
+            )
+
+    def test_a_waf_block_is_not_a_refusal(self, tmp_path, monkeypatch):
+        """403 is what bot protection returns; it says nothing about the grant."""
+        with pytest.raises(auth_module.RefreshNetworkError):
+            self._refresh_with_urlopen(
+                MagicMock(side_effect=self._http_error(403)), tmp_path, monkeypatch
+            )
+
+    def test_an_undecodable_body_is_not_a_refusal(self, tmp_path, monkeypatch):
+        with pytest.raises(auth_module.RefreshNetworkError):
+            self._refresh_with_urlopen(
+                self._responding(b"\xe9\xff not utf-8"), tmp_path, monkeypatch
+            )
+
+    def test_a_body_that_is_not_json_is_not_a_refusal(self, tmp_path, monkeypatch):
+        with pytest.raises(auth_module.RefreshNetworkError):
+            self._refresh_with_urlopen(
+                self._responding(b"<html>captive portal</html>"), tmp_path, monkeypatch
+            )
+
+    def test_a_response_without_a_token_is_a_refusal(self, tmp_path, monkeypatch):
+        with pytest.raises(auth_module.TokenRefused):
+            self._refresh_with_urlopen(
+                self._responding(b'{"token_type": "Bearer"}'), tmp_path, monkeypatch
+            )
+
+    def test_an_unreadable_token_file_is_a_refusal(self, tmp_path, monkeypatch):
+        tokens = tmp_path / "bosch_tokens.json"
+        tokens.write_text("{not json")
+        monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", tokens)
+        with pytest.raises(auth_module.TokenRefused):
+            auth_module.refresh_token()
+
+    def test_an_unreachable_server_is_not_a_refusal(self, tmp_path, monkeypatch):
+        import urllib.error
+
+        with pytest.raises(auth_module.RefreshNetworkError):
+            self._refresh_with_urlopen(
+                MagicMock(side_effect=urllib.error.URLError("name resolution failed")),
+                tmp_path,
+                monkeypatch,
+            )
+
+    def test_a_read_timeout_is_not_a_refusal(self, tmp_path, monkeypatch):
+        """urlopen wraps only connect-phase errors, so this arrives bare."""
+        with pytest.raises(auth_module.RefreshNetworkError):
+            self._refresh_with_urlopen(
+                MagicMock(side_effect=TimeoutError("timed out")), tmp_path, monkeypatch
+            )
+
+    def test_a_reset_connection_is_not_a_refusal(self, tmp_path, monkeypatch):
+        with pytest.raises(auth_module.RefreshNetworkError):
+            self._refresh_with_urlopen(
+                MagicMock(side_effect=ConnectionResetError("reset")), tmp_path, monkeypatch
+            )
+
+
+class TestTheRoutingHelpersNeverRaise:
+    """current_client_id and token_is_euda are called outside any handler.
+
+    _load_json classifies an unusable credential file as TokenRefused, which
+    is right for the refresh path. These two answer "which client is in use"
+    for routing, and sync_tools calls one before its try block - so a corrupt
+    token file used to take the whole sync out with an unclassified error.
+    """
+
+    @pytest.mark.parametrize(
+        "contents",
+        ["{not json", '["not", "an", "object"]', ""],
+        ids=["unparseable", "wrong-shape", "empty"],
+    )
+    def test_current_client_id_falls_back(self, contents, tmp_path, monkeypatch):
+        path = tmp_path / "bosch_tokens.json"
+        path.write_text(contents)
+        monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", path)
+        assert auth_module.current_client_id() == CLIENT_ID
+
+    @pytest.mark.parametrize(
+        "contents",
+        ["{not json", '["not", "an", "object"]'],
+        ids=["unparseable", "wrong-shape"],
+    )
+    def test_token_is_euda_falls_back(self, contents, tmp_path, monkeypatch):
+        path = tmp_path / "bosch_tokens.json"
+        path.write_text(contents)
+        monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", path)
+        assert auth_module.token_is_euda() is False
+
+
+class TestRefusalsAreNotNetworkConditions:
+    """The refusal sites the commit named, each pinned to the right class."""
+
+    def _refresh_with_response(self, payload, tmp_path, monkeypatch):
+        path = tmp_path / "bosch_tokens.json"
+        path.write_text(json.dumps({"access_token": "a", "refresh_token": "r", "expiry": 0}))
+        monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", path)
+        resp = MagicMock()
+        resp.read.return_value = payload
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = lambda *a: None
+        monkeypatch.setattr(auth_module.urllib.request, "urlopen", MagicMock(return_value=resp))
+        return auth_module.refresh_token()
+
+    def test_an_unauthorised_response_is_a_refusal(self, tmp_path, monkeypatch):
+        import io
+        import urllib.error
+
+        path = tmp_path / "bosch_tokens.json"
+        path.write_text(json.dumps({"access_token": "a", "refresh_token": "r", "expiry": 0}))
+        monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", path)
+        monkeypatch.setattr(
+            auth_module.urllib.request,
+            "urlopen",
+            MagicMock(side_effect=urllib.error.HTTPError("u", 401, "no", {}, io.BytesIO(b""))),
+        )
+        with pytest.raises(auth_module.TokenRefused):
+            auth_module.refresh_token()
+
+    def test_a_response_of_the_wrong_shape_is_a_refusal(self, tmp_path, monkeypatch):
+        with pytest.raises(auth_module.TokenRefused):
+            self._refresh_with_response(b'["not", "an", "object"]', tmp_path, monkeypatch)
+
+    def test_a_response_without_a_token_is_a_refusal(self, tmp_path, monkeypatch):
+        with pytest.raises(auth_module.TokenRefused):
+            self._refresh_with_response(b'{"token_type": "Bearer"}', tmp_path, monkeypatch)
+
+    def test_a_token_file_of_the_wrong_shape_is_a_refusal(self, tmp_path, monkeypatch):
+        path = tmp_path / "bosch_tokens.json"
+        path.write_text('["not", "an", "object"]')
+        monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", path)
+        with pytest.raises(auth_module.TokenRefused):
+            auth_module.refresh_token()
+
+
+class TestTheFallbackKeepsTheConfiguredClient:
+    """Which client the fallback picks, not merely that it does not raise.
+
+    A EUDA user whose token file is half-written must still route as EUDA:
+    falling back to the hardcoded client instead answers the Data-Act types
+    with "register a euda client", which they already have, and nothing
+    anywhere says the token file is the problem.
+    """
+
+    def _with_euda_config(self, tmp_path, monkeypatch, tokens_contents):
+        config_path = tmp_path / "bosch_config.json"
+        config_path.write_text(
+            json.dumps({"client_id": "euda-00000000-0000-0000-0000-000000000009"})
+        )
+        tokens_path = tmp_path / "bosch_tokens.json"
+        tokens_path.write_text(tokens_contents)
+        monkeypatch.setattr(auth_module, "BOSCH_CONFIG_PATH", config_path)
+        monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", tokens_path)
+
+    def test_a_corrupt_token_file_still_routes_as_euda(self, tmp_path, monkeypatch):
+        self._with_euda_config(tmp_path, monkeypatch, "{not json")
+        assert auth_module.current_client_id().startswith("euda-")
+        assert auth_module.token_is_euda() is True
+
+    def test_a_readable_token_file_still_wins(self, tmp_path, monkeypatch):
+        self._with_euda_config(tmp_path, monkeypatch, json.dumps({"client_id": "one-bike-app"}))
+        assert auth_module.current_client_id() == "one-bike-app"
+        assert auth_module.token_is_euda() is False
+
+    def test_no_token_file_still_routes_as_euda(self, tmp_path, monkeypatch):
+        config_path = tmp_path / "bosch_config.json"
+        config_path.write_text(
+            json.dumps({"client_id": "euda-00000000-0000-0000-0000-000000000009"})
+        )
+        monkeypatch.setattr(auth_module, "BOSCH_CONFIG_PATH", config_path)
+        monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", tmp_path / "absent.json")
+        assert auth_module.token_is_euda() is True
+
+    def test_a_legacy_token_without_a_client_id_still_routes_as_euda(self, tmp_path, monkeypatch):
+        self._with_euda_config(tmp_path, monkeypatch, json.dumps({"access_token": "a"}))
+        assert auth_module.token_is_euda() is True
+
+    def test_a_malformed_config_file_does_not_raise(self, tmp_path, monkeypatch):
+        """_get_client_id's own guard is what keeps the never-raises promise.
+
+        current_client_id calls it from its except branch, outside any try.
+        """
+        config_path = tmp_path / "bosch_config.json"
+        config_path.write_text("{not json")
+        monkeypatch.setattr(auth_module, "BOSCH_CONFIG_PATH", config_path)
+        tokens_path = tmp_path / "bosch_tokens.json"
+        tokens_path.write_text("{not json either")
+        monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", tokens_path)
+
+        assert auth_module.current_client_id() == CLIENT_ID
+        assert auth_module.token_is_euda() is False
+
+
+class TestAStoredTokenWithoutOneIsARefusal:
+    def test_a_token_file_with_no_access_token(self, tmp_path, monkeypatch):
+        """The expiry check ran first, so this escaped api.get as a KeyError."""
+        path = tmp_path / "bosch_tokens.json"
+        path.write_text(
+            json.dumps({"refresh_token": "r", "expiry": 4102444800, "client_id": CLIENT_ID})
+        )
+        monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", path)
+        with pytest.raises(auth_module.TokenRefused):
+            auth_module.refresh_token()

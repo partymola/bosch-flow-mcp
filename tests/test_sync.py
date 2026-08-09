@@ -191,3 +191,32 @@ def test_auto_sync_retries_after_error_today(tmp_path, monkeypatch):
         mock_run.return_value = {"batteries": {"status": "ok", "records": 0}}
         auto_sync_if_stale("batteries")
         mock_run.assert_called_once_with(["batteries"])
+
+
+def test_an_auth_failure_is_recorded_in_the_sync_log(tmp_path):
+    """Every failure run_sync swallows must leave a row behind.
+
+    The API-error branch logged and the auth branch did not, so the one
+    failure that will not clear itself was the one leaving no trace: the run
+    reported it once and afterwards queries carried on serving the cache with
+    nothing saying why it had stopped growing.
+    """
+    import os
+
+    import bosch_flow_mcp.db as db_module
+    from bosch_flow_mcp import api
+
+    os.environ["BOSCH_FLOW_MCP_DB_PATH"] = str(tmp_path / "test.db")
+
+    with patch(
+        "bosch_flow_mcp.tools.sync_tools.api.get",
+        side_effect=api.BoschAuthError("token rejected"),
+    ):
+        results = run_sync(["bikes"])
+
+    assert results["bikes"]["status"] == "auth_error"
+
+    conn = db_module.get_db(tmp_path / "test.db")
+    rows = conn.execute("SELECT data_type, status FROM sync_log").fetchall()
+    conn.close()
+    assert [(r["data_type"], r["status"]) for r in rows] == [("bikes", "auth_error")]

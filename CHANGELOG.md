@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Every way of failing to obtain an access token is now classified, and the helpers that decide which client is in use fall back to the configured client instead of raising. Only a refusal is an authentication failure: HTTP 400 or 401, a response carrying no token, or credentials that are missing, unreadable or malformed. Everything else is a network error - an unreachable server, a read timeout, a reset connection, a body that will not decode, a 403, a rate limit, and a 5xx. Previously every `RuntimeError` from the refresh became an authentication error while a bare `OSError` or an unreadable response escaped uncaught.
+
+  The classification is made where the token is obtained, with a catch-all at that boundary, so an unanticipated failure is a network error by construction rather than by listing exception types. The distinction matters because an authentication failure tells the user to re-authorise, which rewrites the token file and spends a refresh token that was still working - the wrong answer to a rate limit or a dropped connection.
+- The message reported when a token cannot be obtained is fixed text. It previously carried the underlying exception, which for a credential-file failure is an absolute path.
+- An authentication failure during sync is recorded in `sync_log`. API errors were logged and this one was not, so the failure that will not clear itself was the one leaving no trace: the run reported it once, and afterwards queries carried on serving the cache with nothing anywhere saying why it had stopped growing. A rate limit on a data request is still not recorded - it takes the run out with no row, which remains to be fixed.
+
 ### Packaging
 
 - The container image is built on Python 3.14 instead of 3.13, and 3.14 joins the supported-version classifiers. `requires-python` is unchanged at `>=3.13`: the package still supports both, and only the published image moves. Installing from PyPI is unaffected - that uses whichever Python the user already has.

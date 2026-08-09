@@ -38,6 +38,29 @@ from .config import (
 
 logger = logging.getLogger(__name__)
 
+
+# RFC 6749 defines the token endpoint's refusals as 400, with 401 for a bad
+# client. 403 is deliberately absent: a WAF or bot-protection block returns it
+# with no opinion about the grant.
+_REFUSAL_CODES = frozenset({400, 401})
+
+
+class TokenRefused(RuntimeError):
+    """The server judged the credentials and rejected them.
+
+    The only failure that warrants telling the user to re-authorise, which
+    rewrites the token file and spends a refresh token this host owns.
+    """
+
+
+class RefreshNetworkError(RuntimeError):
+    """The refresh request never got a verdict.
+
+    An unreachable server, a rate limit or an unreadable response says nothing
+    about whether the credentials are still good.
+    """
+
+
 # In-memory token cache - avoids re-reading the token file on every API call
 _tokens: dict | None = None
 _token_lock = threading.Lock()
@@ -59,7 +82,20 @@ def _save_json(path, data) -> None:
 
 
 def _load_json(path) -> dict:
-    return json.loads(path.read_text())
+    """Read a credential file as a dict, or say why the credentials are unusable.
+
+    Classified here rather than left to the caller: a file that is absent,
+    unreadable or not a JSON object means there are no usable credentials,
+    which is a refusal - unlike a transport failure it will not clear on its
+    own, and the user does have to re-authorise.
+    """
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError) as e:
+        raise TokenRefused(f"{path.name} is missing or unreadable. Run: bosch-flow-mcp auth") from e
+    if not isinstance(data, dict):
+        raise TokenRefused(f"{path.name} is malformed. Run: bosch-flow-mcp auth")
+    return data
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +106,10 @@ def _load_json(path) -> dict:
 def _get_client_id() -> str:
     """Return the client_id to use for auth. EUDA config takes priority."""
     if BOSCH_CONFIG_PATH.exists():
-        cfg = _load_json(BOSCH_CONFIG_PATH)
+        try:
+            cfg = _load_json(BOSCH_CONFIG_PATH)
+        except RuntimeError:
+            return CLIENT_ID
         cid = cfg.get("client_id", "")
         if cid:
             return cid
@@ -85,6 +124,10 @@ def _is_euda() -> bool:
     use, not just what config exists.
     """
     if BOSCH_CONFIG_PATH.exists():
+        # Deliberately unguarded. The only caller is the interactive auth
+        # command, where a malformed config should stop the user rather than
+        # send them through a full browser login that quietly yields the wrong
+        # client and then looks consistent afterwards.
         cfg = _load_json(BOSCH_CONFIG_PATH)
         return bool(cfg.get("client_id", ""))
     return False
@@ -105,9 +148,11 @@ def current_client_id() -> str:
             cid = _load_json(BOSCH_TOKENS_PATH).get("client_id")
             if cid:
                 return cid
-    except (OSError, ValueError):
-        pass
-    return _get_client_id()
+        return _get_client_id()
+    except RuntimeError:
+        # The configured client, not the hardcoded one: a EUDA user with a
+        # half-written token file would otherwise route as non-EUDA.
+        return _get_client_id()
 
 
 def token_is_euda() -> bool:
@@ -134,7 +179,7 @@ def _generate_pkce() -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def refresh_token() -> str:
+def _refresh_token() -> str:
     """Return a valid access token, refreshing if expired (5-min buffer).
 
     Thread-safe. Raises RuntimeError if tokens are missing or refresh fails.
@@ -144,15 +189,22 @@ def refresh_token() -> str:
     with _token_lock:
         if _tokens is None:
             if not BOSCH_TOKENS_PATH.exists():
-                raise RuntimeError("Bosch not configured. Run: bosch-flow-mcp auth")
+                raise TokenRefused("Bosch not configured. Run: bosch-flow-mcp auth")
             _tokens = _load_json(BOSCH_TOKENS_PATH)
+
+        if not _tokens.get("access_token"):
+            # Checked before the expiry, which is what made this a KeyError
+            # rather than a verdict. Same rule as a wire response with no
+            # token: the credentials on disk are unusable, and no amount of
+            # waiting fixes that.
+            raise TokenRefused("Token file has no access token. Run: bosch-flow-mcp auth")
 
         now = datetime.now(timezone.utc).timestamp()
         if now < _tokens.get("expiry", 0) - 300:
             return _tokens["access_token"]
 
         if not _tokens.get("refresh_token"):
-            raise RuntimeError("Token expired and no refresh token. Run: bosch-flow-mcp auth")
+            raise TokenRefused("Token expired and no refresh token. Run: bosch-flow-mcp auth")
 
         # Use whichever client_id was used to obtain the token
         client_id = _tokens.get("client_id", _get_client_id())
@@ -169,9 +221,26 @@ def refresh_token() -> str:
         req = urllib.request.Request(BOSCH_TOKEN_URL, data=data, method="POST")
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
-                new_tokens = json.loads(resp.read().decode())
-        except urllib.error.URLError as e:
-            raise RuntimeError(f"Token refresh failed: {e}. Run: bosch-flow-mcp auth") from e
+                raw = resp.read().decode()
+        except urllib.error.HTTPError as e:
+            # Checked before OSError, which it subclasses. Listed by what the
+            # code says about the credentials rather than by range: 429 and 408
+            # are 4xx that carry no verdict at all.
+            if e.code in _REFUSAL_CODES:
+                raise TokenRefused("Token refresh failed. Run: bosch-flow-mcp auth") from e
+            raise RefreshNetworkError("Bosch could not answer the refresh request.") from e
+        except OSError as e:
+            # Not just URLError: urlopen wraps only connect-phase failures in
+            # it, so a read timeout or a reset connection arrives bare.
+            raise RefreshNetworkError("Could not reach Bosch to refresh the token.") from e
+
+        try:
+            new_tokens = json.loads(raw)
+        except ValueError as e:
+            raise RefreshNetworkError("Bosch returned an unreadable response.") from e
+
+        if not isinstance(new_tokens, dict) or not new_tokens.get("access_token"):
+            raise TokenRefused("Token refresh failed. Run: bosch-flow-mcp auth")
 
         _tokens = {
             "access_token": new_tokens["access_token"],
@@ -182,6 +251,23 @@ def refresh_token() -> str:
         }
         _save_json(BOSCH_TOKENS_PATH, _tokens)
         return _tokens["access_token"]
+
+
+def refresh_token() -> str:
+    """Return a valid access token, refreshing if expired.
+
+    Raises exactly two types: TokenRefused, and RefreshNetworkError for
+    everything else. Never replace the catch-all with a list of exception
+    types - anything unanticipated then reads as a dead credential, and that
+    answer spends a working refresh token.
+    """
+    try:
+        return _refresh_token()
+    except (TokenRefused, RefreshNetworkError):
+        raise
+    except Exception as e:
+        logger.error("Token refresh failed: %s", type(e).__name__)
+        raise RefreshNetworkError("Could not obtain a token from Bosch.") from e
 
 
 def invalidate_token_cache() -> None:

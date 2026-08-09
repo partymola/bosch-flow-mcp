@@ -16,7 +16,12 @@ import logging
 import urllib.error
 import urllib.request
 
-from .auth import invalidate_token_cache, refresh_token
+from .auth import (
+    RefreshNetworkError,
+    TokenRefused,
+    invalidate_token_cache,
+    refresh_token,
+)
 from .config import MOBILE_API_BASE
 
 logger = logging.getLogger(__name__)
@@ -57,8 +62,16 @@ def get(path: str, base: str = MOBILE_API_BASE, retries: int = 3) -> dict | list
     for attempt in range(retries):
         try:
             token = refresh_token()
-        except RuntimeError as e:
-            raise BoschAuthError(str(e)) from e
+        except TokenRefused as e:
+            raise BoschAuthError(
+                "Could not obtain an access token. Run: bosch-flow-mcp auth"
+            ) from e
+        except RefreshNetworkError as e:
+            # Not an auth failure: an unreachable server says nothing about the
+            # credentials, and advising re-auth would spend a working refresh
+            # token. The messages are fixed rather than built from the
+            # original, which can carry an absolute config path.
+            raise BoschAPIError("Network error. Check your connection.") from e
 
         url = f"{base}{path}"
         req = urllib.request.Request(
