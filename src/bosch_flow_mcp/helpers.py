@@ -48,6 +48,17 @@ def format_response(result: Any) -> str:
 
 # --- Date parsing ---
 
+
+class InvalidDateError(ValueError):
+    """A tool argument that is not a date this server accepts.
+
+    Its own text, not the API's, and it tells the model how to retry - so
+    require_auth passes it through where it reports every other failure as a
+    type name. A bare ValueError would not do: that is also what a JSON
+    decode raises, and those carry response content.
+    """
+
+
 _RELATIVE_RE = re.compile(r"^(\d+)d$")
 
 
@@ -89,7 +100,9 @@ def _parse_single_date(date_str: str | None, default: date, is_end: bool) -> dat
     if re.match(r"^\d{4}-\d{2}-\d{2}$", date_str):
         return date.fromisoformat(date_str)
 
-    raise ValueError(f"Invalid date '{date_str}'. Use YYYY-MM-DD, YYYY-MM, or Nd (e.g. '30d').")
+    raise InvalidDateError(
+        f"Invalid date '{date_str}'. Use YYYY-MM-DD, YYYY-MM, or Nd (e.g. '30d')."
+    )
 
 
 # --- Auth decorator ---
@@ -98,11 +111,7 @@ def _parse_single_date(date_str: str | None, default: date, is_end: bool) -> dat
 def require_auth(func):
     """Gate every tool on the credentials existing, and on nothing escaping.
 
-    A rate limit or an unreachable server used to leave the MCP client with a
-    transport error rather than a tool result, because the exception types are
-    siblings off Exception and a live read catches none of them. Messages are
-    fixed: an exception's own text names the request path, which for some
-    endpoints carries a part number and a battery serial.
+    See AGENTS.md for which failures reach here and why the messages are fixed.
     """
 
     @functools.wraps(func)
@@ -115,6 +124,8 @@ def require_auth(func):
             )
         try:
             return await func(*args, **kwargs)
+        except InvalidDateError as e:
+            return json.dumps({"error": str(e)})
         except api.BoschAuthError:
             return json.dumps(
                 {"error": "Bosch rejected the stored credentials. Run: bosch-flow-mcp auth"}

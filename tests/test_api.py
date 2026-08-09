@@ -114,3 +114,31 @@ class TestRefreshFailuresReachCallersClassified:
             )
         assert not isinstance(caught.value, api_module.BoschAuthError)
         assert str(caught.value) == "Network error. Check your connection."
+
+
+class TestNothingLoggedCarriesTheRequestPath:
+    """An MCP client captures this server's stderr to a file on disk.
+
+    Some request paths carry a part number and a battery serial, so a log
+    line naming one writes it to disk just as surely as the sync log did.
+    """
+
+    def test_a_403_logs_the_host_not_the_path(self, monkeypatch, caplog):
+        import logging
+
+        secret_path = "/capacity-testers?partNumber=PART-SECRET&serialNumber=SN-SECRET"
+        monkeypatch.setattr(api_module, "refresh_token", lambda: "tok")
+        monkeypatch.setattr(
+            api_module.urllib.request,
+            "urlopen",
+            MagicMock(side_effect=HTTPError("https://example.invalid", 403, "no", {}, None)),
+        )
+
+        with caplog.at_level(logging.INFO, logger="bosch_flow_mcp.api"):
+            with pytest.raises(BoschForbiddenError):
+                api_module.get(secret_path)
+
+        logged = " ".join(r.getMessage() for r in caplog.records)
+        assert "PART-SECRET" not in logged
+        assert "SN-SECRET" not in logged
+        assert "capacity-testers" not in logged

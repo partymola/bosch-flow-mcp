@@ -128,3 +128,44 @@ class TestTheAuthGate:
     def test_a_healthy_tool_is_untouched(self, monkeypatch):
         result = self._tool(monkeypatch, True, lambda: '{"ok": true}')
         assert result == {"ok": True}
+
+    def test_a_bad_date_keeps_its_message_so_the_model_can_retry(self, monkeypatch):
+        """The catch-all must not swallow the server's own guidance.
+
+        A bare ValueError would not do as the carrier: that is also what a
+        JSON decode raises, and those carry response content.
+        """
+        from bosch_flow_mcp.helpers import parse_date
+
+        def boom():
+            parse_date("last week")
+
+        result = self._tool(monkeypatch, True, boom)
+        assert "YYYY-MM-DD" in result["error"]
+        assert "last week" in result["error"]
+
+
+def test_every_tool_is_gated():
+    """`require_auth` on every tool is the first line of the gate's own claim.
+
+    Removing the decorator from any one tool left the suite green.
+    """
+    import importlib
+    import pkgutil
+
+    import bosch_flow_mcp.tools as tools_pkg
+    from bosch_flow_mcp.helpers import require_auth
+
+    ungated = []
+    for module_info in pkgutil.iter_modules(tools_pkg.__path__):
+        module = importlib.import_module(f"bosch_flow_mcp.tools.{module_info.name}")
+        for name in dir(module):
+            obj = getattr(module, name)
+            if not (callable(obj) and name.startswith("bosch_")):
+                continue
+            # functools.wraps sets __wrapped__ on the gated function.
+            if getattr(obj, "__wrapped__", None) is None:
+                ungated.append(f"{module_info.name}.{name}")
+
+    assert ungated == [], f"tools not wrapped in require_auth: {ungated}"
+    assert require_auth is not None
