@@ -394,32 +394,54 @@ class TestTheDispatchOrderSatisfiesItsDependencies:
     - the one failure shape that leaves no diagnostic.
     """
 
-    def test_capacity_after_components_records_rows(self, tmp_path, monkeypatch):
-        import bosch_flow_mcp.db as db_module
+    def _run(self, order, db_name, tmp_path, monkeypatch):
+        # The shared mock returns [] for capacity-testers, so under it capacity
+        # records zero in either order and the pair proves nothing. A local
+        # payload is what makes the two halves differ.
+        def with_capacity(path, base=None, retries=3):
+            if "capacity-testers" in path:
+                return [{"testDate": "2026-03-10", "capacity": 90}]
+            if "registrations" in path:
+                # The shared fixture's only component is a driveUnit, and
+                # capacity reads battery components - so without one it
+                # records zero in either order and the pair proves nothing.
+                return {
+                    "registrations": [
+                        {
+                            "bikeId": FAKE_BIKE_ID,
+                            "components": [
+                                {
+                                    "componentType": "battery",
+                                    "partNumber": "TESTPART003",
+                                    "serialNumber": "BATTSN001",
+                                    "productName": "Test Battery",
+                                    "softwareVersion": "1.0.0",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            return _mock_api_get(path, base, retries)
 
-        monkeypatch.setenv("BOSCH_FLOW_MCP_DB_PATH", str(tmp_path / "ordered.db"))
+        monkeypatch.setenv("BOSCH_FLOW_MCP_DB_PATH", str(tmp_path / db_name))
         with (
-            patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=_mock_api_get),
+            patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=with_capacity),
             patch("bosch_flow_mcp.tools.sync_tools.auth.token_is_euda", return_value=True),
         ):
-            results = run_sync(["bikes", "components", "capacity"])
+            return run_sync(order)
 
+    def test_capacity_after_components_records_rows(self, tmp_path, monkeypatch):
+        results = self._run(
+            ["bikes", "components", "capacity"], "ordered.db", tmp_path, monkeypatch
+        )
         assert results["components"]["records"] >= 1
-        conn = db_module.get_db(tmp_path / "ordered.db")
-        conn.close()
-        # Depends on components having run first; the reversed order below
-        # produces the same status with nothing behind it.
-        assert results["capacity"]["status"] in ("ok", "empty")
+        assert results["capacity"]["records"] >= 1
 
     def test_capacity_before_components_finds_nothing(self, tmp_path, monkeypatch):
         """The failure the declared order prevents, shown rather than asserted."""
-        monkeypatch.setenv("BOSCH_FLOW_MCP_DB_PATH", str(tmp_path / "reversed.db"))
-        with (
-            patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=_mock_api_get),
-            patch("bosch_flow_mcp.tools.sync_tools.auth.token_is_euda", return_value=True),
-        ):
-            results = run_sync(["bikes", "capacity", "components"])
-
+        results = self._run(
+            ["bikes", "capacity", "components"], "reversed.db", tmp_path, monkeypatch
+        )
         assert results["capacity"]["records"] == 0
 
     def test_the_declared_order_holds(self):
