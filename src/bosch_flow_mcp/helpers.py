@@ -2,12 +2,15 @@
 
 import functools
 import json
+import logging
 import re
 from datetime import date, timedelta
 from typing import Any
 
-from . import db
+from . import api, db
 from .config import BOSCH_TOKENS_PATH
+
+logger = logging.getLogger(__name__)
 
 # --- Response formatting ---
 
@@ -93,7 +96,14 @@ def _parse_single_date(date_str: str | None, default: date, is_end: bool) -> dat
 
 
 def require_auth(func):
-    """Decorator that checks Bosch tokens exist before calling a tool."""
+    """Gate every tool on the credentials existing, and on nothing escaping.
+
+    A rate limit or an unreachable server used to leave the MCP client with a
+    transport error rather than a tool result, because the exception types are
+    siblings off Exception and a live read catches none of them. Messages are
+    fixed: an exception's own text names the request path, which for some
+    endpoints carries a part number and a battery serial.
+    """
 
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
@@ -103,6 +113,20 @@ def require_auth(func):
                     "error": "Bosch not configured. Run: bosch-flow-mcp auth",
                 }
             )
-        return await func(*args, **kwargs)
+        try:
+            return await func(*args, **kwargs)
+        except api.BoschAuthError:
+            return json.dumps(
+                {"error": "Bosch rejected the stored credentials. Run: bosch-flow-mcp auth"}
+            )
+        except api.BoschRateLimitError:
+            return json.dumps({"error": "Bosch is rate limiting this client. Try again shortly."})
+        except api.BoschAPIError as e:
+            return json.dumps(
+                {"error": f"Bosch could not answer this request ({type(e).__name__})."}
+            )
+        except Exception as e:
+            logger.error("Tool %s failed: %s", func.__name__, type(e).__name__)
+            return json.dumps({"error": f"Unexpected error ({type(e).__name__})."})
 
     return wrapper

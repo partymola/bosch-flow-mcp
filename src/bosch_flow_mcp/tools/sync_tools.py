@@ -40,6 +40,12 @@ EUDA_EMPTY_MSG = (
     "config/bosch_config.json and run `bosch-flow-mcp auth` to use the standard "
     "app sign-in, which works for any account."
 )
+# Fixed text, because sync_log keeps these and empty_data_note serves them
+# back to the model. An exception's own message names the request path, which
+# for capacity carries a part number and a battery serial.
+AUTH_FAILED_MSG = "Bosch rejected the stored credentials. Run: bosch-flow-mcp auth"
+RATE_LIMITED_MSG = "Bosch is rate limiting this client. It resumes on the next sync."
+API_FAILED_MSG = "Bosch could not answer this request."
 
 
 # ---------------------------------------------------------------------------
@@ -383,24 +389,48 @@ def run_sync(data_types: list[str]) -> dict:
 
             try:
                 count = sync_fn(conn, is_euda)
-            except api.BoschAuthError as e:
+            except api.BoschAuthError:
                 # Logged like every other failure: a dead token is the one that
                 # will not clear itself, so it is the one worth finding later.
-                db.log_sync(conn, dtype, "auth_error", 0, str(e))
+                db.log_sync(conn, dtype, "auth_error", 0, AUTH_FAILED_MSG)
                 results[dtype] = {
                     "status": "auth_error",
                     "records": 0,
                     "code": "auth",
-                    "message": str(e),
+                    "message": AUTH_FAILED_MSG,
+                }
+                continue
+            except api.BoschRateLimitError:
+                db.log_sync(conn, dtype, "error", 0, RATE_LIMITED_MSG)
+                results[dtype] = {
+                    "status": "rate_limited",
+                    "records": 0,
+                    "code": "rate_limited",
+                    "message": RATE_LIMITED_MSG,
                 }
                 continue
             except api.BoschAPIError as e:
-                db.log_sync(conn, dtype, "error", 0, str(e))
+                # Type only. These messages name the request path, which for
+                # capacity carries a part and a battery serial - and the row
+                # is read back by empty_data_note and served to the model on
+                # every later empty read.
+                note = f"{API_FAILED_MSG} ({type(e).__name__})"
+                db.log_sync(conn, dtype, "error", 0, note)
                 results[dtype] = {
                     "status": "error",
                     "records": 0,
                     "code": "error",
-                    "message": str(e),
+                    "message": note,
+                }
+                continue
+            except Exception as e:
+                note = f"{API_FAILED_MSG} (unexpected {type(e).__name__})"
+                db.log_sync(conn, dtype, "error", 0, note)
+                results[dtype] = {
+                    "status": "error",
+                    "records": 0,
+                    "code": "error",
+                    "message": note,
                 }
                 continue
 

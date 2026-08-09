@@ -1,7 +1,9 @@
 """Tests for sync orchestration."""
 
+import json
 from unittest.mock import MagicMock, patch
 
+from bosch_flow_mcp.tools import sync_tools
 from bosch_flow_mcp.tools.sync_tools import auto_sync_if_stale, run_sync
 from tests.conftest import FAKE_BIKE_ID
 
@@ -210,16 +212,19 @@ def test_an_auth_failure_is_recorded_in_the_sync_log(tmp_path):
 
     with patch(
         "bosch_flow_mcp.tools.sync_tools.api.get",
-        side_effect=api.BoschAuthError("token rejected"),
+        side_effect=api.BoschAuthError("token rejected for /v1/x?serialNumber=SN-SECRET"),
     ):
         results = run_sync(["bikes"])
 
     assert results["bikes"]["status"] == "auth_error"
 
     conn = db_module.get_db(tmp_path / "test.db")
-    rows = conn.execute("SELECT data_type, status FROM sync_log").fetchall()
+    rows = conn.execute("SELECT data_type, status, notes FROM sync_log").fetchall()
     conn.close()
     assert [(r["data_type"], r["status"]) for r in rows] == [("bikes", "auth_error")]
+    # Fixed text, not the exception's: this row is re-served to the model.
+    assert rows[0]["notes"] == sync_tools.AUTH_FAILED_MSG
+    assert "SN-SECRET" not in json.dumps([results, rows[0]["notes"]])
 
 
 def test_a_response_body_never_reaches_the_sync_log_or_a_tool(tmp_path, monkeypatch):
@@ -287,3 +292,66 @@ def test_the_api_layer_never_puts_a_response_body_in_its_message(monkeypatch):
     assert "rider@example.invalid" not in message
     assert "FRAME999" not in message
     assert "500" in message
+
+
+class TestNoRequestPathReachesTheSyncLogOrAModel:
+    """sync_log keeps these, and empty_data_note serves them back.
+
+    The capacity request path carries a part number and a battery serial, so
+    the exception's own message is not something to store or repeat.
+    """
+
+    def _sync_with(self, exc, tmp_path, monkeypatch, dtype="bikes"):
+        import bosch_flow_mcp.db as db_module
+        from bosch_flow_mcp.helpers import empty_data_note
+
+        monkeypatch.setenv("BOSCH_FLOW_MCP_DB_PATH", str(tmp_path / "test.db"))
+        with (
+            patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=exc),
+            patch("bosch_flow_mcp.tools.sync_tools.auth.token_is_euda", return_value=True),
+        ):
+            results = run_sync([dtype])
+
+        conn = db_module.get_db(tmp_path / "test.db")
+        rows = [(r["status"], r["notes"]) for r in conn.execute("SELECT * FROM sync_log")]
+        note = empty_data_note(conn, dtype)
+        conn.close()
+        return results, rows, note
+
+    def test_an_api_failure_records_no_path(self, tmp_path, monkeypatch):
+        from bosch_flow_mcp import api
+
+        secret = (
+            "Forbidden (403) for /diagnosis-field-data/capacity-testers"
+            "?partNumber=PART-SECRET-123&serialNumber=SERIAL-SECRET-456"
+        )
+        results, rows, note = self._sync_with(
+            api.BoschForbiddenError(secret), tmp_path, monkeypatch
+        )
+
+        # Non-vacuous: the sync must actually have failed, or absence of the
+        # fragments says nothing.
+        assert results["bikes"]["status"] == "error"
+        assert rows and rows[0][0] == "error"
+        assert note.get("data_status") == "error"
+
+        blob = json.dumps([results, rows, note])
+        for fragment in ("PART-SECRET-123", "SERIAL-SECRET-456", "partNumber", "capacity-testers"):
+            assert fragment not in blob
+
+    def test_a_rate_limit_leaves_a_row_instead_of_taking_the_run_out(self, tmp_path, monkeypatch):
+        from bosch_flow_mcp import api
+
+        results, rows, _ = self._sync_with(
+            api.BoschRateLimitError("Rate limited on /v1/bike-profile"), tmp_path, monkeypatch
+        )
+
+        assert results["bikes"]["status"] == "rate_limited"
+        assert rows and rows[0][0] == "error"
+
+    def test_an_unanticipated_failure_leaves_a_row(self, tmp_path, monkeypatch):
+        results, rows, _ = self._sync_with(KeyError("/etc/secret/path"), tmp_path, monkeypatch)
+
+        assert results["bikes"]["status"] == "error"
+        assert rows and rows[0][0] == "error"
+        assert "/etc/secret/path" not in json.dumps([results, rows])
