@@ -451,7 +451,15 @@ class TestTheFallbackKeepsTheConfiguredClient:
 
 class TestAStoredTokenWithoutOneIsARefusal:
     def test_a_token_file_with_no_access_token(self, tmp_path, monkeypatch):
-        """The expiry check ran first, so this escaped api.get as a KeyError."""
+        """The expiry check ran first, so this escaped api.get as a KeyError.
+
+        Reaching this state needs a writer outside this repo: _exchange_code and
+        _refresh_token both always store an access_token, and a half-written file
+        fails to parse and is refused before this check. Note the refusal is
+        strict - a file holding a live refresh_token would have refreshed - so if
+        a future writer can produce this state, guard the early return rather
+        than relax this test.
+        """
         path = tmp_path / "bosch_tokens.json"
         path.write_text(
             json.dumps({"refresh_token": "r", "expiry": 4102444800, "client_id": CLIENT_ID})
@@ -487,12 +495,25 @@ class TestTheTokenFileIsNeverBrieflyReadable:
         assert oct(target.stat().st_mode & 0o777) == "0o600"
 
     def test_an_existing_loose_file_is_tightened(self, tmp_path):
+        """And tightened before the token is written, not after.
+
+        On a pre-existing file the mode at open is whatever it already was,
+        so writing first would put a real token on disk world-readable -
+        which the final mode and the open mode both look right through.
+        """
         import os as os_module
+
+        real_fchmod = os_module.fchmod
+
+        def spy(fd, mode):
+            assert os_module.fstat(fd).st_size == 0, "content was written before tightening"
+            return real_fchmod(fd, mode)
 
         target = tmp_path / "bosch_tokens.json"
         target.write_text("{}")
         os_module.chmod(target, 0o644)
-        auth_module._save_json(target, {"refresh_token": "fictional"})
+        with patch.object(auth_module.os, "fchmod", spy):
+            auth_module._save_json(target, {"refresh_token": "fictional"})
         assert oct(target.stat().st_mode & 0o777) == "0o600"
 
     def test_a_failure_to_tighten_does_not_take_the_token_with_it(self, tmp_path):
