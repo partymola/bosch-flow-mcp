@@ -108,12 +108,7 @@ def get(path: str, base: str = MOBILE_API_BASE, retries: int = 3) -> dict | list
             if e.code == 429:
                 raise BoschRateLimitError(f"Rate limited on {path}")
 
-            body = ""
-            try:
-                body = e.read().decode()[:200]
-            except Exception:
-                pass
-            raise BoschAPIError(f"API error {e.code} for {path}: {body}")
+            raise BoschAPIError(f"API error {e.code} for {path}")
 
         except urllib.error.URLError as e:
             raise BoschAPIError("Network error. Check your connection.") from e

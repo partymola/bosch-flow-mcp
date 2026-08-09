@@ -1,6 +1,6 @@
 """Tests for sync orchestration."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from bosch_flow_mcp.tools.sync_tools import auto_sync_if_stale, run_sync
 from tests.conftest import FAKE_BIKE_ID
@@ -220,3 +220,70 @@ def test_an_auth_failure_is_recorded_in_the_sync_log(tmp_path):
     rows = conn.execute("SELECT data_type, status FROM sync_log").fetchall()
     conn.close()
     assert [(r["data_type"], r["status"]) for r in rows] == [("bikes", "auth_error")]
+
+
+def test_a_response_body_never_reaches_the_sync_log_or_a_tool(tmp_path, monkeypatch):
+    """These notes are stored, then re-served to the model.
+
+    empty_data_note reads the last row back and returns it as `note` on every
+    empty get-tool result, so a Bosch error body quoting an account or a
+    serial would be handed to the model on every later read.
+    """
+    import io
+    import urllib.error
+
+    import bosch_flow_mcp.db as db_module
+    from bosch_flow_mcp import api
+    from bosch_flow_mcp.helpers import empty_data_note
+
+    monkeypatch.setenv("BOSCH_FLOW_MCP_DB_PATH", str(tmp_path / "test.db"))
+    secret = '{"trace": "user=rider@example.invalid serial=FRAME999 token=eyJhbGciOi"}'
+
+    def raising_get(*a, **k):
+        error = urllib.error.HTTPError(
+            "https://example.invalid", 500, "boom", {}, io.BytesIO(secret.encode())
+        )
+        raise api.BoschAPIError(f"API error {error.code} for /v1/bike-profile")
+
+    with patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=raising_get):
+        run_sync(["bikes"])
+
+    conn = db_module.get_db(tmp_path / "test.db")
+    notes = [r["notes"] for r in conn.execute("SELECT notes FROM sync_log").fetchall()]
+    surfaced = empty_data_note(conn, "bikes")
+    conn.close()
+
+    assert notes and notes[0]
+    for fragment in ("rider@example.invalid", "FRAME999", "eyJhbGciOi"):
+        assert all(fragment not in (note or "") for note in notes)
+        assert fragment not in str(surfaced)
+
+
+def test_the_api_layer_never_puts_a_response_body_in_its_message(monkeypatch):
+    """The source of the note above: api.get builds what run_sync stores."""
+    import io
+    import urllib.error
+
+    import pytest
+
+    from bosch_flow_mcp import api
+
+    secret = '{"trace": "user=rider@example.invalid serial=FRAME999"}'
+    monkeypatch.setattr(api, "refresh_token", lambda: "tok")
+    monkeypatch.setattr(
+        api.urllib.request,
+        "urlopen",
+        MagicMock(
+            side_effect=urllib.error.HTTPError(
+                "https://example.invalid", 500, "boom", {}, io.BytesIO(secret.encode())
+            )
+        ),
+    )
+
+    with pytest.raises(api.BoschAPIError) as exc_info:
+        api.get("/v1/bike-profile")
+
+    message = str(exc_info.value)
+    assert "rider@example.invalid" not in message
+    assert "FRAME999" not in message
+    assert "500" in message

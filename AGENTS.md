@@ -9,7 +9,7 @@
 
 ## Data Safety Rules
 
-The `scripts/check-no-data.sh` pre-commit hook blocks `*.db`, `*tokens.json`, and secret patterns (install per [CONTRIBUTING.md](CONTRIBUTING.md)). With the hook installed most of this is automatic; use the list when it isn't yet installed or when adding test data:
+The `scripts/check-no-data.sh` pre-commit hook blocks database files, real files under `config/`, and anything over 100KB (install per [CONTRIBUTING.md](CONTRIBUTING.md)). **It does not grep for secrets**, and it matches `config/` by path, not `tokens.json` by name - a credential file staged anywhere else passes. Use the list below regardless:
 
 1. `config/bosch_tokens.json` and `bosch_flow.db` must stay gitignored - verify `git status` shows no token/db files
 2. Test fixtures (`tests/conftest.py`) use fictional UUIDs (`00000000-0000-0000-0000-000000000001`) and round numbers only - no real bike data ever enters tests
@@ -20,7 +20,9 @@ The `scripts/check-no-data.sh` pre-commit hook blocks `*.db`, `*tokens.json`, an
 - **Entry point**: `src/bosch_flow_mcp/cli.py` - routes `auth`/`sync` subcommands or starts the MCP stdio server
 - **MCP server**: `mcp_instance.py` creates the shared `MCPServer` instance
 - **Auth**: `auth.py` - two flows. The default `one-bike-app` PKCE flow (iOS deep-link redirect, DevTools copy-paste). If `config/bosch_config.json` holds a EUDA `client_id`, auth switches to the EUDA flow (plain `localhost:4200` callback). `token_is_euda()` reads the token file fresh each call, so routing follows the current sign-in without a restart
-- **API**: `api.py` - GET wrapper with thread-safe token refresh (5-min expiry buffer) and a typed exception hierarchy (`BoschAuthError`, `BoschRateLimitError`, `BoschAPIError`, `BoschForbiddenError`)
+- **API**: `api.py` - GET wrapper with thread-safe token refresh (5-min expiry buffer) and typed exceptions: `BoschAuthError`, `BoschRateLimitError`, `BoschAPIError`, `BoschForbiddenError`. **They are siblings off `Exception`, not a hierarchy** - `except BoschAPIError` does not catch a 429, which is why a rate limit on a data request still takes a run out with no `sync_log` row
+- **Failure classification**: `refresh_token` is a boundary over `_refresh_token` and raises exactly two types. `TokenRefused` only where the server or the credential files judged the credentials unusable; `RefreshNetworkError` for everything else, via a catch-all, so an unanticipated failure lands there by construction rather than by listing exception types. **Never widen `TokenRefused` to a condition that can clear on its own** (a rate limit, a 403 from bot protection, an unreadable response): re-authorising rewrites the token file and spends a refresh token that was still working. Pinned by `TestTheRefreshBoundary` and `TestRefusalsAndNetworkConditions` in `tests/test_auth.py`
+- **Client routing**: `current_client_id` and `token_is_euda` are called outside any handler and must never raise. They fall back to the **configured** client, not the hardcoded one - a EUDA user with a half-written token file would otherwise route as non-EUDA and be told to register a client they already have. `_get_client_id` carries its own guard for that promise; `_is_euda` is deliberately left unguarded, because its only caller is the interactive auth command where a malformed config should stop the user rather than send them through a browser login that yields the wrong client. Pinned by `TestTheFallbackKeepsTheConfiguredClient` and `TestTheRoutingHelpersNeverRaise`
 - **Sync**: `tools/sync_tools.py` - routes each data type by the token's client. Standard mobile sign-in reads bikes/batteries/components/firmware/SoC; `service`/`software_updates`/`capacity` need the EUDA client and otherwise report `unavailable` (not a silent empty). Non-EU EUDA accounts report `empty`/`euda_empty` with remedy text
 - **DB**: `db.py` - SQLite, default `bosch_flow.db` in the package root (`BOSCH_FLOW_MCP_DB_PATH` to override; `BOSCH_FLOW_MCP_CONFIG_DIR` for the config dir). Besides the per-domain data tables, a `sync_log` table records each sync's timestamp, data type, status, and rows added - query it when data looks stale
 - **Tools**: `tools/` - `@mcp.tool` definitions grouped by domain (bike, battery, component, service, analysis, activity, sync). Cached `get_*` tools auto-sync if stale; `bosch_get_soc`, `bosch_get_activities`, and `bosch_get_activity_detail` are live reads
@@ -29,6 +31,7 @@ The `scripts/check-no-data.sh` pre-commit hook blocks `*.db`, `*tokens.json`, an
 
 - **Capacity sync depends on components** - it needs part + serial numbers, so `components` must be synced first
 - **Route by token client, never call both hosts blindly** - the sync layer picks the host from the authenticated client_id
+- **No response body reaches a message.** `run_sync` writes `str(e)` into `sync_log.notes`, and `helpers.empty_data_note` reads that row back and returns it as `note` on every empty `bosch_get_*` result - so a Bosch error body quoting an account or a frame serial would be stored and then handed to the model on every later read. `api.get` raises a status code and a path, never the body. Pinned by `test_a_response_body_never_reaches_the_sync_log_or_a_tool` and `test_the_api_layer_never_puts_a_response_body_in_its_message` in `tests/test_sync.py`
 
 ## Test conventions
 
