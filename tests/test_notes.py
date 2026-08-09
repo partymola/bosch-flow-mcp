@@ -133,3 +133,25 @@ async def test_components_no_note_when_populated(note_db):
     data = json.loads(await bosch_get_components())
     assert data["count"] == 1
     assert "note" not in data
+
+
+def test_the_types_own_diagnostic_wins_over_the_bikes_fallback(tmp_path, monkeypatch):
+    """Both rows present is the only case that distinguishes the order.
+
+    Each existing test sets one type or the other, so the precedence
+    between them was unpinned - and reversed, the model is handed the stale
+    bikes explanation in place of the specific one.
+    """
+    import bosch_flow_mcp.db as db_module
+    from bosch_flow_mcp.helpers import empty_data_note
+
+    conn = db_module.get_db(tmp_path / "test.db")
+    db_module.log_sync(conn, "bikes", "empty", 0, "BIKES: non-EU, switch client")
+    db_module.log_sync(conn, "batteries", "error", 0, "BATTERIES: could not answer")
+
+    note = empty_data_note(conn, "batteries", fallback_type="bikes")
+    conn.close()
+
+    assert note["data_status"] == "error"
+    assert "BATTERIES" in note["note"]
+    assert "BIKES" not in note["note"]

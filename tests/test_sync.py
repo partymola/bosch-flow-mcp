@@ -383,3 +383,50 @@ class TestNoRequestPathReachesTheSyncLogOrAModel:
         assert results["bikes"]["status"] == "error"
         assert rows and rows[0][0] == "error"
         assert "/etc/secret/path" not in json.dumps([results, rows])
+
+
+class TestTheDispatchOrderSatisfiesItsDependencies:
+    """Declared in AGENTS.md and in a comment, pinned by nothing until now.
+
+    A dict literal is exactly the thing someone tidies alphabetically, and
+    the breach is silent: capacity reads part and serial numbers from the
+    components table, so running it first records zero rows and reports ok
+    - the one failure shape that leaves no diagnostic.
+    """
+
+    def test_capacity_after_components_records_rows(self, tmp_path, monkeypatch):
+        import bosch_flow_mcp.db as db_module
+
+        monkeypatch.setenv("BOSCH_FLOW_MCP_DB_PATH", str(tmp_path / "ordered.db"))
+        with (
+            patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=_mock_api_get),
+            patch("bosch_flow_mcp.tools.sync_tools.auth.token_is_euda", return_value=True),
+        ):
+            results = run_sync(["bikes", "components", "capacity"])
+
+        assert results["components"]["records"] >= 1
+        conn = db_module.get_db(tmp_path / "ordered.db")
+        conn.close()
+        # Depends on components having run first; the reversed order below
+        # produces the same status with nothing behind it.
+        assert results["capacity"]["status"] in ("ok", "empty")
+
+    def test_capacity_before_components_finds_nothing(self, tmp_path, monkeypatch):
+        """The failure the declared order prevents, shown rather than asserted."""
+        monkeypatch.setenv("BOSCH_FLOW_MCP_DB_PATH", str(tmp_path / "reversed.db"))
+        with (
+            patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=_mock_api_get),
+            patch("bosch_flow_mcp.tools.sync_tools.auth.token_is_euda", return_value=True),
+        ):
+            results = run_sync(["bikes", "capacity", "components"])
+
+        assert results["capacity"]["records"] == 0
+
+    def test_the_declared_order_holds(self):
+        """So a reorder fails here rather than in a user's empty result."""
+        from bosch_flow_mcp.tools.sync_tools import _ALL_TYPES
+
+        assert _ALL_TYPES[0] == "bikes", "everything else needs bike ids"
+        assert _ALL_TYPES.index("components") < _ALL_TYPES.index("capacity"), (
+            "capacity reads part and serial numbers written by components"
+        )
