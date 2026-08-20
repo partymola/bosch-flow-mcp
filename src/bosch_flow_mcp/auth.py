@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import secrets
+import socket
 import sys
 import threading
 import urllib.error
@@ -69,6 +70,28 @@ _token_lock = threading.Lock()
 # EUDA localhost callback port
 EUDA_CALLBACK_PORT = 4200
 EUDA_REDIRECT_URI = f"http://localhost:{EUDA_CALLBACK_PORT}"
+
+
+class _CallbackServer(HTTPServer):
+    """Refuse to share the port the authorisation code arrives on.
+
+    Deliberate, and not what `HTTPServer` does by default: it asks for address
+    reuse, which on Windows is what lets another process bind over this
+    listener and take the code. Not asking is the fix; the exclusive-use
+    option is asked for as well. Why each half is there, and what it costs, is
+    in AGENTS.md. Pinned by TestTheCallbackPortIsNotShared, which drives this
+    method's Windows branch on a POSIX runner.
+    """
+
+    allow_reuse_address = sys.platform != "win32"
+    # SO_REUSEPORT is the POSIX-side version of the same hazard; nothing sets
+    # this, and nothing should.
+    allow_reuse_port = False
+
+    def server_bind(self):
+        if sys.platform == "win32":
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
 
 
 # ---------------------------------------------------------------------------
@@ -362,12 +385,27 @@ def _setup_euda_auth() -> None:
 
     print(f"\nBosch eBike Flow auth (EUDA: {client_id[:20]}...)")
     print("=" * 50)
+
+    # Bind before opening the browser: the listener no longer asks to share the
+    # port, so a busy one is now a real failure, and sending the user to an
+    # authorisation page whose redirect has nowhere to land wastes the attempt.
+    try:
+        server = _CallbackServer(("localhost", EUDA_CALLBACK_PORT), CallbackHandler)
+    except OSError:
+        print(
+            f"Port {EUDA_CALLBACK_PORT} is in use, so the callback cannot be received. "
+            "It must match the redirect URI registered for the EUDA client and so "
+            "cannot be changed. On Windows a socket from a recent `bosch-flow-mcp auth` "
+            "may still be closing; retry once it has.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     print("\nOpening browser for Bosch login...")
     print(f"URL: {auth_url}\n")
     webbrowser.open(auth_url)
 
     print(f"Waiting for callback on localhost:{EUDA_CALLBACK_PORT}...")
-    server = HTTPServer(("localhost", EUDA_CALLBACK_PORT), CallbackHandler)
     server.handle_request()
 
     if not auth_code:
