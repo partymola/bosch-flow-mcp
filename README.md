@@ -164,7 +164,7 @@ project.
 
 ## Data safety
 
-- OAuth tokens are saved with `0600` permissions; the token files and `bosch_flow.db` are gitignored.
+- OAuth tokens are created at `0600` on POSIX - Windows ignores the mode and governs access by inherited ACLs; the token files and `bosch_flow.db` are gitignored.
 - A pre-commit hook (`scripts/check-no-data.sh`) blocks committing databases, token files, and secrets. Install it after cloning:
 
   ```bash
