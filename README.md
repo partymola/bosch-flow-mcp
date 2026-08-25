@@ -47,7 +47,7 @@ interoperability.
 
 ## Requirements
 
-- Python 3.13+
+- Python 3.13+ (tested on 3.13 and 3.14, on Linux, macOS and Windows, in CI)
 - [uv](https://docs.astral.sh/uv/) (recommended) or pip
 - A Bosch eBike Flow account (free, register at the Bosch eBike Flow app)
 - A BES3 Smart System eBike registered in the app
