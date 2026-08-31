@@ -1,6 +1,8 @@
 """Tests for auth token management."""
 
+import io
 import json
+import logging
 import socket
 import sys
 from datetime import datetime, timezone
@@ -680,3 +682,187 @@ class TestTheCallbackPortIsNotShared:
         assert exit_info.value.code == 1
         assert opened == [], opened
         assert str(auth_module.EUDA_CALLBACK_PORT) in capsys.readouterr().err
+
+
+def _responding(body):
+    """A urlopen stand-in returning `body` with a 200."""
+
+    def raiser(req, timeout=None):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return body
+
+        return _Resp()
+
+    return raiser
+
+
+class TestTheCodeExchangeReportsNoResponseContent:
+    """`_exchange_code` runs at a terminal, and its failures are printed there.
+
+    Some of these carry the server's own words. A refused exchange has an
+    error body, and Bosch has no obligation to keep an account out of it; a
+    response of the wrong shape is a token dict, which is the worse one,
+    because a body carrying a `refresh_token` and no `access_token` is exactly
+    the shape that reaches it. The rest reach this function as failures that
+    would otherwise escape as a traceback, which names this install's paths.
+    What a reader needs is the status and the fact it was refused, and none of
+    it needs the response to say so.
+    """
+
+    def _run(self, monkeypatch, raiser, capsys, caplog, expected):
+        """Drive one failure and hold the whole message to fixed text.
+
+        Equality rather than the absence of a chosen string: a message that
+        appends the server's `error_description`, or the HTTP reason phrase, or
+        the response headers passes every "is this secret absent" assertion
+        while carrying whatever the server chose to put there.
+
+        `caplog` as well as `capsys`, because they are different channels. The
+        logging plugin owns a root handler under pytest, so a `logger.error`
+        carrying the token dict never reaches `capsys` - while in production
+        `cli.main` calls `basicConfig(stream=sys.stderr)` and it lands on the
+        terminal verbatim. Switching a print to a logger is the natural way to
+        restore the diagnosis this function deliberately gives up.
+        """
+        monkeypatch.setattr(auth_module.urllib.request, "urlopen", raiser)
+        with caplog.at_level(logging.DEBUG, logger="bosch_flow_mcp"):
+            with pytest.raises(SystemExit) as exit_info:
+                auth_module._exchange_code(
+                    "cid", "the-code", "the-verifier", "http://localhost:1/cb"
+                )
+        assert exit_info.value.code == 1
+        captured = capsys.readouterr()
+        assert captured.err.strip() == expected
+        # stdout as well, and it is the likelier of the two: every other print
+        # in this function and in both setup flows goes there, so a maintainer
+        # restoring the diagnosis writes a bare `print`. Same terminal, same
+        # scrollback, same disclosure.
+        assert captured.out == "", captured.out
+        assert caplog.records == [], [r.getMessage() for r in caplog.records]
+
+    def test_a_refused_exchange_reports_the_status_not_the_body(self, monkeypatch, capsys, caplog):
+        import urllib.error
+
+        secret = "account_id=ACC-SECRET-42 owner=A Person"
+
+        def raiser(req, timeout=None):
+            raise urllib.error.HTTPError(
+                "https://bosch.example/token",
+                400,
+                "Bad Request: ACC-SECRET-42",
+                {"X-Account": "ACC-SECRET-42"},
+                io.BytesIO(secret.encode()),
+            )
+
+        self._run(monkeypatch, raiser, capsys, caplog, "Error exchanging code: HTTP 400.")
+
+    def test_a_response_of_the_wrong_shape_never_prints_the_tokens(
+        self, monkeypatch, capsys, caplog
+    ):
+        # The realistic shape: a refresh token arrives, an access token does
+        # not, and printing the dict to explain that puts the refresh token on
+        # the terminal and into whatever scrollback keeps it.
+        body = json.dumps(
+            {
+                "refresh_token": "rt-SECRET-VALUE",
+                "token_type": "Bearer",
+                "error_description": "account ACC-SECRET-42 is not provisioned",
+            }
+        ).encode()
+
+        self._run(
+            monkeypatch,
+            _responding(body),
+            capsys,
+            caplog,
+            "Error: the token response carried no access token.",
+        )
+
+    def test_a_transport_failure_reports_only_its_type(self, monkeypatch, capsys, caplog):
+        """`str(e)` carries text the peer influences.
+
+        Measured, a refused connection and a DNS failure name no path, so this
+        is not about paths: a TLS name mismatch echoes an identity string back
+        out of the handshake, and the type name is the only part of any of them
+        that is ours.
+        """
+        import urllib.error
+
+        def raiser(req, timeout=None):
+            raise urllib.error.URLError("certificate is not valid for 'evil.example'")
+
+        self._run(monkeypatch, raiser, capsys, caplog, "Error exchanging code: URLError.")
+
+    def test_a_read_phase_failure_is_handled_rather_than_traced(self, monkeypatch, capsys, caplog):
+        """urlopen wraps only connect-phase failures, so this arrives bare.
+
+        Unhandled it escapes as a traceback, which names this install's
+        absolute paths - the disclosure the rest of this class exists to stop.
+        """
+
+        def raiser(req, timeout=None):
+            raise TimeoutError("timed out")
+
+        self._run(monkeypatch, raiser, capsys, caplog, "Error exchanging code: TimeoutError.")
+
+    def test_a_body_that_is_not_json_is_handled_rather_than_traced(
+        self, monkeypatch, capsys, caplog
+    ):
+        # An interstitial from a proxy or WAF is the realistic shape, and
+        # json.loads raises past both transport handlers.
+        self._run(
+            monkeypatch,
+            _responding(b"<html>blocked</html>"),
+            capsys,
+            caplog,
+            "Error exchanging code: the response was not readable.",
+        )
+
+    def test_a_json_scalar_is_refused_rather_than_subscripted(self, monkeypatch, capsys, caplog):
+        # `"access_token" not in 42` is a TypeError, so the shape check needs
+        # the isinstance guard to reach its own message.
+        self._run(
+            monkeypatch,
+            _responding(b"42"),
+            capsys,
+            caplog,
+            "Error: the token response carried no access token.",
+        )
+
+    def test_the_success_path_prints_neither_token(self, monkeypatch, capsys, caplog, tmp_path):
+        """The exit nothing else drives, and the one holding both credentials.
+
+        Without it there is nowhere for an assertion about the success path to
+        live, so a diagnostic added there is unpinned however the failure
+        branches are covered.
+        """
+        tokens_path = tmp_path / "bosch_tokens.json"
+        monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", tokens_path)
+        body = json.dumps(
+            {
+                "access_token": "at-SECRET-VALUE",
+                "refresh_token": "rt-SECRET-VALUE",
+                "expires_in": 3600,
+            }
+        ).encode()
+        monkeypatch.setattr(auth_module.urllib.request, "urlopen", _responding(body))
+
+        with caplog.at_level(logging.DEBUG, logger="bosch_flow_mcp"):
+            auth_module._exchange_code("cid", "the-code", "the-verifier", "http://localhost:1/cb")
+
+        stored = json.loads(tokens_path.read_text())
+        assert stored["access_token"] == "at-SECRET-VALUE"
+        assert stored["refresh_token"] == "rt-SECRET-VALUE"
+
+        captured = capsys.readouterr()
+        for stream in (captured.out, captured.err):
+            assert "at-SECRET-VALUE" not in stream, stream
+            assert "rt-SECRET-VALUE" not in stream, stream
+        assert not any("SECRET-VALUE" in r.getMessage() for r in caplog.records)

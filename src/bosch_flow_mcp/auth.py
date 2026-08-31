@@ -483,21 +483,35 @@ def _exchange_code(client_id: str, code: str, verifier: str, redirect_uri: str) 
     )
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
-            tokens = json.loads(resp.read().decode())
+            raw = resp.read()
     except urllib.error.HTTPError as e:
-        body = ""
-        try:
-            body = e.read().decode()[:200]
-        except Exception:
-            pass
-        print(f"Error exchanging code: HTTP {e.code} - {body}", file=sys.stderr)
+        # The status, never the body. Bosch has no obligation to keep an
+        # account out of an error body, and this prints to a terminal.
+        print(f"Error exchanging code: HTTP {e.code}.", file=sys.stderr)
         sys.exit(1)
-    except urllib.error.URLError as e:
-        print(f"Error exchanging code: {e}", file=sys.stderr)
+    except OSError as e:
+        # Wider than URLError, for the reason _refresh_token already documents:
+        # urlopen wraps only connect-phase failures in it, so a read timeout or
+        # a reset connection arrives bare and would otherwise escape as a
+        # traceback, which names this install's absolute paths.
+        print(f"Error exchanging code: {type(e).__name__}.", file=sys.stderr)
         sys.exit(1)
 
-    if "access_token" not in tokens:
-        print(f"Error: unexpected token response: {tokens}", file=sys.stderr)
+    # Parsed outside the transport handlers, the way _refresh_token does it: a
+    # body that will not decode or is not JSON is its own failure cause, and
+    # neither handler above catches ValueError.
+    try:
+        tokens = json.loads(raw)
+    except ValueError:
+        print("Error exchanging code: the response was not readable.", file=sys.stderr)
+        sys.exit(1)
+
+    if not isinstance(tokens, dict) or "access_token" not in tokens:
+        # Not the dict. The realistic shape here carries a refresh_token and no
+        # access_token, so printing it to explain the failure puts a live
+        # credential on the terminal. The isinstance guard is what keeps a JSON
+        # scalar or list from reaching the subscript below as a TypeError.
+        print("Error: the token response carried no access token.", file=sys.stderr)
         sys.exit(1)
 
     now = datetime.now(timezone.utc).timestamp()

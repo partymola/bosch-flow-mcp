@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+
+- `bosch-flow-mcp auth` no longer prints the token server's own words when the code exchange fails. A refused exchange printed up to 200 bytes of the error body, a transport failure printed the exception's own text, and a response with no access token printed the whole token dictionary. That last one matters most, because the shape that reaches it is a response carrying a `refresh_token` and no `access_token`, so explaining the failure put a live credential on the terminal and into whatever keeps its scrollback. The failures now report a status code, an exception type, and fixed text respectively.
+- The same command now reports a read timeout, a reset connection, a body that is not JSON, and a token response that is not an object, instead of ending in a traceback. `urlopen` wraps only connect-phase failures, so each of those escaped both handlers, and the traceback named the paths of the machine it ran on.
+
+### Changed
+
+- `mcp` 2.1.1, up from 2.0.0. Nothing a caller sees changes: this server's auth gate turns every failure into a tool result rather than letting it escape, so the release's masking of unconverted exception messages has nothing to act on here.
+
 ## [0.5.0] - 2026-08-21
 
 ### Fixed
