@@ -2,6 +2,7 @@
 
 from collections import defaultdict
 from datetime import date
+from typing import Literal
 
 import anyio
 
@@ -28,11 +29,22 @@ def _quarter_key(dt_str: str) -> str:
     return f"{d.year}-Q{q}"
 
 
+_PERIOD_KEY_FNS = {
+    "weekly": _week_key,
+    "monthly": _month_key,
+    "quarterly": _quarter_key,
+}
+
+# Unpacked from the dispatch rather than written out, so the schema offers
+# exactly the periods there is a key function for.
+TrendPeriod = Literal[*_PERIOD_KEY_FNS]
+
+
 @mcp.tool()
 @require_auth
 async def bosch_battery_trends(
     bike_id: str | None = None,
-    period: str = "monthly",
+    period: TrendPeriod = "monthly",
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> str:
@@ -77,13 +89,7 @@ async def bosch_battery_trends(
             }
         )
 
-    # Choose period key function
-    if period == "weekly":
-        key_fn = _week_key
-    elif period == "quarterly":
-        key_fn = _quarter_key
-    else:
-        key_fn = _month_key
+    key_fn = _PERIOD_KEY_FNS[period]
 
     # Group by (bike_id, battery_id, period)
     groups: dict[tuple, list[dict]] = defaultdict(list)

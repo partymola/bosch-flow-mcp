@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-09-02
+
+### Fixed
+
+- `bosch_battery_trends` reads the aggregation period it was asked for. Any value other than `weekly` or `quarterly` fell through to monthly, so a period the tool did not recognise returned correct monthly buckets labelled with whatever was sent. `"period": "not-a-period"` came back beside real figures. Nothing was empty and nothing failed, which made it worse than an error: the numbers were right and the label describing them was not.
+
+### Changed
+
+- `period` accepts only `weekly`, `monthly` or `quarterly`, and those values are declared in the tool's schema rather than chosen inside it. A caller sending anything else now gets a validation error naming the accepted values. The values are unpacked from the dispatch, so the schema offers exactly the periods there is a key function for.
+
 ## [0.5.1] - 2026-08-31
 
 ### Security
@@ -113,7 +123,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Live state-of-charge via the ConnectModule mobile API.
 - Pre-commit hook (`scripts/check-no-data.sh`) blocking commit of databases, tokens, and other secrets.
 
-[Unreleased]: https://github.com/partymola/bosch-flow-mcp/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/partymola/bosch-flow-mcp/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/partymola/bosch-flow-mcp/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/partymola/bosch-flow-mcp/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/partymola/bosch-flow-mcp/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/partymola/bosch-flow-mcp/compare/v0.3.0...v0.4.0
