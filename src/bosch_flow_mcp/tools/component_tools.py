@@ -28,11 +28,30 @@ async def bosch_get_components(
     Args:
         bike_id: Optional bike UUID to filter to one bike.
         component_type: Optional component type filter, e.g. "driveUnit",
-            "battery", "headUnit", "connectedModule", "remoteControl".
+            "battery", "headUnit", "connectedModule", "remoteControl". Matched
+            against the types your bikes registered, ignoring case, so every
+            stored spelling of a type answers together. A value none of them
+            match is refused, naming the types that are held.
     """
     await anyio.to_thread.run_sync(lambda: auto_sync_if_stale("components"))
     conn = db.get_db()
     try:
+        if component_type is not None:
+            # Bosch owns these values, so the cache is the only list of them.
+            held = db.component_types(conn)
+            if held:
+                matched = [t for t in held if t.casefold() == component_type.casefold()]
+                if not matched:
+                    return format_response(
+                        {
+                            "error": (
+                                f"Unknown component type '{component_type}'. "
+                                f"Registered types: {', '.join(held)}."
+                            )
+                        }
+                    )
+                component_type = matched
+
         components = db.query_components(conn, bike_id, component_type)
         note = empty_data_note(conn, "components", fallback_type="bikes") if not components else {}
     finally:

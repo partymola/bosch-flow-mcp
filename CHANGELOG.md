@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-09-05
+
+### Fixed
+
+- `bosch_get_components` refuses a component type it cannot match instead of answering with an empty list. `component_type="DRIVEUNIT"` and `component_type="not-a-component"` both came back as no components, which reads as a bike without that part rather than as a filter the server could not use, and wrong case alone was enough to produce one. The filter is now matched against the types your bikes registered, ignoring case, and a value none of them match is refused with those types named. Bosch owns this vocabulary and a future bike can register a type this server has never seen, so the accepted values are read from your own data rather than declared in the tool's schema.
+- A type stored under more than one spelling answers under all of them. A bike's profile keys and its registrations can describe the same part, so asking for `battery` no longer hides rows held as `Battery`.
+
+### Changed
+
+- `component_type=""` is refused rather than read as no filter at all. It previously returned every component on every bike, which answers a question the caller did not ask.
+
 ## [0.6.0] - 2026-09-02
 
 ### Fixed
@@ -123,7 +134,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Live state-of-charge via the ConnectModule mobile API.
 - Pre-commit hook (`scripts/check-no-data.sh`) blocking commit of databases, tokens, and other secrets.
 
-[Unreleased]: https://github.com/partymola/bosch-flow-mcp/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/partymola/bosch-flow-mcp/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/partymola/bosch-flow-mcp/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/partymola/bosch-flow-mcp/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/partymola/bosch-flow-mcp/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/partymola/bosch-flow-mcp/compare/v0.4.0...v0.5.0

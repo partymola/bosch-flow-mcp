@@ -3,6 +3,7 @@
 import json
 import os
 import sqlite3
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -403,17 +404,35 @@ def query_battery_latest(conn: sqlite3.Connection, bike_id: str | None) -> list[
     return _rows_to_dicts(rows)
 
 
+def component_types(conn: sqlite3.Connection) -> list[str]:
+    """Every component type held, in the spelling the provider stored it under."""
+    rows = conn.execute(
+        "SELECT DISTINCT component_type FROM components ORDER BY component_type"
+    ).fetchall()
+    return [row[0] for row in rows]
+
+
 def query_components(
-    conn: sqlite3.Connection, bike_id: str | None, component_type: str | None
+    conn: sqlite3.Connection,
+    bike_id: str | None,
+    component_type: str | Sequence[str] | None,
 ) -> list[dict]:
+    """Rows for a bike, a component type, or several spellings of one type.
+
+    Several because the provider spells one type more than one way: a bike's
+    profile keys and its registrations can both describe the same battery.
+    """
     params: list = []
     where: list[str] = []
     if bike_id:
         where.append("bike_id = ?")
         params.append(bike_id)
-    if component_type:
-        where.append("component_type = ?")
-        params.append(component_type)
+    if component_type is not None:
+        wanted = [component_type] if isinstance(component_type, str) else list(component_type)
+        # No spelling asked for matches no row. Reading an empty sequence as
+        # "no filter" would answer a narrowed question with every component.
+        where.append(f"component_type IN ({','.join('?' * len(wanted))})" if wanted else "1 = 0")
+        params.extend(wanted)
     sql = "SELECT * FROM components"
     if where:
         sql += " WHERE " + " AND ".join(where)
