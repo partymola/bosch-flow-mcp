@@ -32,7 +32,7 @@ dependencies = [
     "anyio==4.15.1",
     # ZoneInfo needs an IANA tz database; ship one so activity local-date
     # conversion works on platforms without system tz data (e.g. Windows).
-    "tzdata==2026.3",
+    "tzdata==2026.4",
 ]
 
 [project.scripts]
