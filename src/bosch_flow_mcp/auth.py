@@ -12,6 +12,7 @@ Two auth paths (auto-detected):
 """
 
 import base64
+import contextlib
 import hashlib
 import json
 import logging
@@ -19,12 +20,15 @@ import os
 import secrets
 import socket
 import sys
+import tempfile
 import threading
+import time
 import urllib.error
 import urllib.request
 import webbrowser
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from .config import (
@@ -63,16 +67,14 @@ class RefreshNetworkError(RuntimeError):
     """
 
 
-# Tool calls run in worker threads. Without this, one can read the token file
-# while another is half-way through saving it, and two can spend the same
+# Tool calls run in worker threads. Without this, two can spend the same
 # refresh token.
 _token_lock = threading.Lock()
 
 # A refreshed grant whose save failed: (the refresh token the file held when
 # the save failed, the grant). The refresh token is treated as rotating, so the
 # file's may already be spent and this the only live copy. It is used only
-# while the file still holds that token or cannot be read, an unreadable file
-# being taken for this process's own failed write.
+# while the file still holds that token or cannot be read.
 _unsaved: tuple[str | None, dict] | None = None
 
 # EUDA localhost callback port
@@ -108,23 +110,49 @@ class _CallbackServer(HTTPServer):
 
 
 def _save_json(path, data) -> None:
-    """Write a credential file owner-only from the outset.
+    """Replace a credential file in one step, owner-only from the outset.
 
-    Writing first and chmodding after left a new token world-readable for the
-    duration of the write. The mode on os.open applies only at creation, so
-    an existing file keeps what it had - hence the best-effort fchmod, which
-    must not be fatal: O_TRUNC has already emptied the file by then, and on a
-    refresh the old token is spent.
+    Written to a new file beside it, synced, and renamed over it: `os.replace`
+    is atomic within a directory on POSIX, so a reader sees the old file or
+    the new one and never part of either, and a failed write leaves the old
+    one in place. mkstemp creates the file 0600 before anything is written,
+    under a name no other writer shares. A symlink is followed, so the file it
+    points at is the one replaced. A kill between the write and the rename can
+    leave a temp file, at 0600. Windows ignores the mode.
     """
+    path = Path(os.path.realpath(path))
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as handle:
-        if hasattr(os, "fchmod"):
-            try:
-                os.fchmod(handle.fileno(), 0o600)
-            except OSError:
-                logger.warning("Could not tighten permissions on %s", path.name)
-        handle.write(json.dumps(data, indent=2))
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(json.dumps(data, indent=2))
+            handle.flush()
+            os.fsync(handle.fileno())
+        _replace(tmp, path)
+    except BaseException:
+        # Whatever stops the cleanup, the error to report is the one above.
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+# Windows refuses to replace a file another process has open, and every
+# server sharing the token file opens it on each request. Each read is brief,
+# so a short wait clears it; anywhere else the refusal is a real permission
+# fault and is raised at once.
+_REPLACE_ATTEMPTS = 5
+_REPLACE_BACKOFF_SECONDS = 0.05
+
+
+def _replace(src, dst) -> None:
+    for attempt in range(1, _REPLACE_ATTEMPTS + 1):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if sys.platform != "win32" or attempt == _REPLACE_ATTEMPTS:
+                raise
+            time.sleep(_REPLACE_BACKOFF_SECONDS * attempt)
 
 
 def _load_json(path) -> dict:
@@ -134,8 +162,8 @@ def _load_json(path) -> dict:
     unreadable or not a JSON object means there are no usable credentials,
     which is a refusal - unlike a transport failure it will not clear on its
     own, and the user does have to re-authorise. A refresh already in flight
-    reads the file through `_reread_tokens` instead, which takes the same
-    failure for another writer part-way through.
+    reads the file through `_reread_tokens` instead, where an unreadable file
+    is not a verdict on the credentials the refresh just sent.
     """
     try:
         data = json.loads(path.read_text())
@@ -283,7 +311,9 @@ def _save(refreshed: dict, file_token: str | None) -> None:
     try:
         _save_json(BOSCH_TOKENS_PATH, refreshed)
     except OSError:
-        logger.warning("Could not save the refreshed token; holding it until a save succeeds")
+        # Once, when the grant starts being held: the retry runs on every call.
+        if _unsaved is None:
+            logger.warning("Could not save the refreshed token; holding it until a save succeeds")
         _unsaved = (file_token, refreshed)
     else:
         _unsaved = None
@@ -343,15 +373,13 @@ def _refresh_token() -> str:
                 # the file now holds a different one, another writer replaced
                 # it, and the next call refreshes from it.
                 on_disk = _reread_tokens()
-                if on_disk is None and _unsaved is not None:
-                    # The held grant was refused, and the empty file is taken
-                    # for this process's own failed write, which holds nothing
-                    # newer.
-                    _unsaved = None
-                    raise TokenRefused("Token refresh failed. Run: bosch-flow-mcp auth") from e
                 if on_disk is None:
+                    # Nothing to compare the refusal with. A held grant was
+                    # the token refused, so it goes, and the next call's read
+                    # of the file decides.
+                    _unsaved = None
                     logger.warning("Token refresh refused while the token file was unreadable")
-                    raise RefreshNetworkError("The token file was being replaced.") from e
+                    raise RefreshNetworkError("The token file could not be read.") from e
                 _unsaved = None
                 if on_disk.get("refresh_token") not in (tokens.get("refresh_token"), file_token):
                     if _usable(on_disk):
@@ -384,13 +412,9 @@ def _refresh_token() -> str:
 
         # A grant another writer saved during the request wins. Anything else
         # is saved over, since the refresh token just issued is known to be
-        # live. A file that cannot be read is most likely part-way through
-        # such a write, so it is left alone too, unless a grant is held: then
-        # the file is the one this process's own failed save emptied.
+        # live; saves replace the file in one step, so an unreadable one is
+        # gone or corrupt rather than part-way through being written.
         on_disk = _reread_tokens()
-        if on_disk is None and _unsaved is None:
-            logger.warning("Token file unreadable after refresh; not saving over it")
-            return refreshed["access_token"]
         if on_disk is not None and _replaced_by_a_later_grant(on_disk, tokens):
             logger.warning("A later grant was saved during the refresh; using it instead")
             _unsaved = None
@@ -626,7 +650,12 @@ def _exchange_code(client_id: str, code: str, verifier: str, redirect_uri: str) 
         "expiry": now + tokens.get("expires_in", 7200),
         "client_id": client_id,
     }
-    _save_json(BOSCH_TOKENS_PATH, token_store)
+    try:
+        _save_json(BOSCH_TOKENS_PATH, token_store)
+    except OSError as e:
+        # The type, never the text: an OSError's message names this install's paths.
+        print(f"Error: the tokens could not be saved ({type(e).__name__}).", file=sys.stderr)
+        sys.exit(1)
 
     print("\nAuth complete. Tokens saved to config/bosch_tokens.json")
     print("\nTry a sync:")

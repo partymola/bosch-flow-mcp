@@ -262,14 +262,15 @@ class TestTheTokenFileIsTheOnlyCopy:
             assert auth_module.refresh_token() == "tok-new"
         assert self._stored()["refresh_token"] == "ref-new"
 
-    def test_a_refresh_does_not_overwrite_a_file_caught_mid_write(self):
-        """Unreadable after the refresh most likely means another writer is
-        part-way through, so the token just obtained is returned unsaved."""
+    def test_a_refresh_saves_over_a_file_it_cannot_read(self):
+        """Saves replace the file in one step, so an unreadable one is gone or
+        corrupt rather than part-way through a save, and the refresh token
+        just issued is the only live one."""
         self._write(expiry=0)
         urlopen = self._urlopen_writing(self._REFRESHED, raw="{")
         with patch("urllib.request.urlopen", urlopen):
             assert auth_module.refresh_token() == "tok-new"
-        assert self.path.read_text() == "{"
+        assert self._stored()["refresh_token"] == "ref-new"
 
     @pytest.mark.parametrize("code", sorted(auth_module._REFUSAL_CODES))
     def test_a_refusal_after_the_file_was_replaced_uses_the_new_file(self, code):
@@ -431,7 +432,11 @@ class TestTheTokenFileIsTheOnlyCopy:
         assert self._stored()["refresh_token"] == "ref-new"
 
     def _fail_saves(self, times, truncate=False):
-        """A `_save_json` that raises OSError for its first `times` calls."""
+        """A `_save_json` that raises OSError for its first `times` calls.
+
+        `truncate` empties the file as it fails, which this package's saves
+        never do but a writer outside it can.
+        """
         real = auth_module._save_json
         calls = {"n": 0}
 
@@ -463,9 +468,9 @@ class TestTheTokenFileIsTheOnlyCopy:
         assert self._stored()["refresh_token"] == "ref-new"
         assert auth_module._unsaved is None
 
-    def test_a_held_grant_that_expires_is_refreshed_and_saved_over_its_own_empty_file(self):
-        """The file is empty because this process's save failed half-way, not
-        because another writer is mid-write, so the next refresh repairs it."""
+    def test_a_held_grant_that_expires_is_refreshed_and_saved_over_an_empty_file(self):
+        """The held grant is the only live copy, so an empty file, which holds
+        nothing newer, is repaired by the next refresh."""
         self._write(expiry=0)
         answers = [
             self._answer(dict(self._REFRESHED, expires_in=0)),
@@ -522,29 +527,63 @@ class TestTheTokenFileIsTheOnlyCopy:
         assert auth_module.refresh_token() == "tok-auth"
         assert auth_module._unsaved is None
 
-    @pytest.mark.parametrize("truncate", [False, True], ids=["file-intact", "file-emptied"])
-    def test_a_refused_held_grant_is_a_refusal(self, truncate):
-        """Otherwise its refusal reads as a change to the file, which still
-        holds the token it replaced or was emptied by the failed write, and
-        every call refreshes with a dead token."""
-        self._write(expiry=0)
+    def _hold_then_refuse(self):
+        """An urlopen that grants a token expiring at once, then refuses."""
         answers = [self._answer(dict(self._REFRESHED, expires_in=0)), self._refusal(400)]
+        posts = []
 
         def urlopen(request, timeout=None):
+            posts.append(request)
             answer = answers.pop(0)
             if isinstance(answer, Exception):
                 raise answer
             return answer
 
-        with self._fail_saves(9, truncate=truncate), patch("urllib.request.urlopen", urlopen):
+        return urlopen, posts
+
+    def test_a_refused_held_grant_is_a_refusal(self):
+        """Otherwise its refusal reads as a change to the file, which still
+        holds the token it replaced, and every call refreshes with a dead
+        token."""
+        self._write(expiry=0)
+        urlopen, _ = self._hold_then_refuse()
+        with self._fail_saves(9), patch("urllib.request.urlopen", urlopen):
             auth_module.refresh_token()
             with pytest.raises(auth_module.TokenRefused):
                 auth_module.refresh_token()
         assert auth_module._unsaved is None
 
+    def test_a_refused_held_grant_with_the_file_unreadable_is_settled_by_the_next_call(self):
+        """Unreadable may be another writer part-way through, so the refusal is
+        not a verdict; the held grant is dead either way, and the next call
+        reads the file without sending anything."""
+        self._write(expiry=0)
+        urlopen, posts = self._hold_then_refuse()
+        with self._fail_saves(9, truncate=True), patch("urllib.request.urlopen", urlopen):
+            auth_module.refresh_token()
+            with pytest.raises(auth_module.RefreshNetworkError):
+                auth_module.refresh_token()
+            assert auth_module._unsaved is None
+            with pytest.raises(auth_module.TokenRefused):
+                auth_module.refresh_token()
+        assert len(posts) == 2
+
+    def test_a_failed_save_is_reported_once_while_it_is_retried(self, caplog):
+        """The retry runs on every request, and a sync makes many."""
+        self._write(expiry=0)
+        with (
+            self._fail_saves(9),
+            patch("urllib.request.urlopen", lambda *a, **k: self._answer(self._REFRESHED)),
+            caplog.at_level(logging.WARNING, logger="bosch_flow_mcp.auth"),
+        ):
+            for _ in range(4):
+                auth_module.refresh_token()
+        assert len([r for r in caplog.records if "save" in r.getMessage()]) == 1
+
     def test_a_refusal_while_the_file_is_unreadable_is_not_a_refusal(self):
-        """The file is most likely part-way through being replaced, which clears
-        on its own; a refusal would tell the user to re-authorise over it."""
+        """An unreadable file may be another writer part-way through, so the
+        refusal is not a verdict; telling the user to re-authorise over it
+        would be wrong whenever that writer then finishes."""
         self._write(expiry=0)
         urlopen = self._urlopen_writing(self._refusal(400), raw="{")
         with patch("urllib.request.urlopen", urlopen):
@@ -883,63 +922,303 @@ class TestAStoredTokenWithoutOneIsARefusal:
             auth_module.refresh_token()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits; Windows uses ACLs")
-class TestTheTokenFileIsNeverBrieflyReadable:
-    """Writing first and chmodding after left a new token world-readable.
+class TestTheTokenFileIsReplacedInOneStep:
+    """A reader sees the old file or the new one, never part of either.
 
-    Only for the duration of the write, and only at creation - but the
-    window is real, and the mode was untested either way.
+    A truncate-and-write save shows every reader an empty or partial file for
+    the length of the write, and a failure part-way leaves it that way, after
+    the refresh token it held may already be spent.
     """
 
-    def test_a_new_file_is_created_owner_only(self, tmp_path):
+    def test_the_target_holds_the_whole_old_file_until_the_new_one_replaces_it(self, tmp_path):
         import os as os_module
-
-        seen = {}
-        real_open = os_module.open
-
-        def spy(path, flags, mode=0o777, **kwargs):
-            seen["mode"] = mode
-            return real_open(path, flags, mode, **kwargs)
-
-        target = tmp_path / "bosch_tokens.json"
-        with patch.object(auth_module.os, "open", spy):
-            auth_module._save_json(target, {"refresh_token": "fictional"})
-
-        assert oct(seen["mode"]) == "0o600"
-        assert oct(target.stat().st_mode & 0o777) == "0o600"
-
-    def test_an_existing_loose_file_is_tightened(self, tmp_path):
-        """And tightened before the token is written, not after.
-
-        On a pre-existing file the mode at open is whatever it already was,
-        so writing first would put a real token on disk world-readable -
-        which the final mode and the open mode both look right through.
-        """
-        import os as os_module
-
-        real_fchmod = os_module.fchmod
-
-        def spy(fd, mode):
-            assert os_module.fstat(fd).st_size == 0, "content was written before tightening"
-            return real_fchmod(fd, mode)
-
-        target = tmp_path / "bosch_tokens.json"
-        target.write_text("{}")
-        os_module.chmod(target, 0o644)
-        with patch.object(auth_module.os, "fchmod", spy):
-            auth_module._save_json(target, {"refresh_token": "fictional"})
-        assert oct(target.stat().st_mode & 0o777) == "0o600"
-
-    def test_a_failure_to_tighten_does_not_take_the_token_with_it(self, tmp_path):
-        def refuse(fd, mode):
-            raise PermissionError(1, "Operation not permitted")
 
         target = tmp_path / "bosch_tokens.json"
         target.write_text('{"refresh_token": "old"}')
-        with patch.object(auth_module.os, "fchmod", refuse):
-            auth_module._save_json(target, {"refresh_token": "rotated"})
+        seen = []
+        real_replace = os_module.replace
 
-        assert json.loads(target.read_text())["refresh_token"] == "rotated"
+        def spy(src, dst):
+            seen.append((target.read_text(), json.loads(open(src).read())))
+            return real_replace(src, dst)
+
+        with patch.object(auth_module.os, "replace", spy):
+            auth_module._save_json(target, {"refresh_token": "new"})
+
+        assert seen == [('{"refresh_token": "old"}', {"refresh_token": "new"})]
+        assert json.loads(target.read_text()) == {"refresh_token": "new"}
+
+    @staticmethod
+    def _writes_that(action):
+        """An `os.fdopen` whose handle calls `action(fd)` before each write."""
+        import os as os_module
+
+        real_fdopen = os_module.fdopen
+
+        class _Handle:
+            def __init__(self, handle):
+                self._handle = handle
+
+            def __enter__(self):
+                self._handle.__enter__()
+                return self
+
+            def __exit__(self, *exc):
+                return self._handle.__exit__(*exc)
+
+            def write(self, text):
+                action(self._handle.fileno())
+                return self._handle.write(text)
+
+            def __getattr__(self, name):
+                return getattr(self._handle, name)
+
+        return patch.object(
+            auth_module.os, "fdopen", lambda fd, *a, **k: _Handle(real_fdopen(fd, *a, **k))
+        )
+
+    @pytest.fixture
+    def folder(self, tmp_path):
+        """A directory of the test's own, resolved: conftest keeps a file in
+        tmp_path, and the save follows symlinks, which on macOS the temp
+        directory sits behind."""
+        folder = tmp_path.resolve() / "config"
+        folder.mkdir()
+        return folder
+
+    @pytest.mark.parametrize(
+        "failure",
+        [OSError(28, "No space left on device"), KeyboardInterrupt()],
+        ids=["disk-full", "interrupted"],
+    )
+    def test_a_failed_write_leaves_the_old_file_and_nothing_else(self, folder, failure):
+        """The temp file holds the new refresh token, so one left behind is a
+        live credential lying in the config directory."""
+        target = folder / "bosch_tokens.json"
+        target.write_text('{"refresh_token": "old"}')
+
+        def fail(fd):
+            raise failure
+
+        with self._writes_that(fail), pytest.raises(type(failure)):
+            auth_module._save_json(target, {"refresh_token": "new"})
+
+        assert target.read_text() == '{"refresh_token": "old"}'
+        assert list(target.parent.iterdir()) == [target]
+
+    def test_a_failed_replace_leaves_the_old_file_and_nothing_else(self, folder):
+        target = folder / "bosch_tokens.json"
+        target.write_text('{"refresh_token": "old"}')
+
+        def refuse(src, dst):
+            raise OSError(13, "Permission denied")
+
+        with patch.object(auth_module.os, "replace", refuse), pytest.raises(OSError):
+            auth_module._save_json(target, {"refresh_token": "new"})
+
+        assert target.read_text() == '{"refresh_token": "old"}'
+        assert list(target.parent.iterdir()) == [target]
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits; Windows uses ACLs")
+    def test_the_new_file_is_owner_only_before_the_token_is_written(self, tmp_path):
+        """Checked at the write: a chmod at any point after it gives the same
+        final mode while leaving the token readable in between."""
+        import os as os_module
+
+        seen = []
+        target = tmp_path / "bosch_tokens.json"
+        with self._writes_that(lambda fd: seen.append(oct(os_module.fstat(fd).st_mode & 0o777))):
+            auth_module._save_json(target, {"refresh_token": "fictional"})
+
+        assert seen == ["0o600"]
+
+    def test_each_save_publishes_its_own_temp_file_from_the_same_directory(self, folder):
+        """A fixed temp name lets one writer publish another's half-written
+        file, and a rename from another directory is not atomic."""
+        import os as os_module
+        from pathlib import Path
+
+        published = []
+        real_replace = os_module.replace
+
+        def spy(src, dst):
+            published.append(Path(src))
+            return real_replace(src, dst)
+
+        target = folder / "bosch_tokens.json"
+        with patch.object(auth_module.os, "replace", spy):
+            auth_module._save_json(target, {"refresh_token": "a"})
+            auth_module._save_json(target, {"refresh_token": "b"})
+
+        assert len(set(published)) == 2
+        assert all(p.parent == folder and p != target for p in published)
+
+    def test_a_failed_cleanup_does_not_hide_why_the_save_failed(self, folder):
+        """A scanner can block the unlink as well as the replace on Windows."""
+
+        def refuse_replace(src, dst):
+            raise OSError(28, "No space left on device")
+
+        def refuse_unlink(path):
+            raise PermissionError(13, "Access is denied")
+
+        with (
+            patch.object(auth_module.os, "replace", refuse_replace),
+            patch.object(auth_module.os, "unlink", refuse_unlink),
+            pytest.raises(OSError) as raised,
+        ):
+            auth_module._save_json(folder / "bosch_tokens.json", {"refresh_token": "new"})
+        assert raised.value.errno == 28
+
+    def test_the_new_file_is_synced_before_it_replaces_the_old_one(self, folder):
+        """Unsynced, a crash soon after the rename can leave an empty file on
+        some filesystems, after the refresh token it replaced was spent."""
+        import os as os_module
+
+        data = {"refresh_token": "new"}
+        events = []
+        real_fsync, real_replace = os_module.fsync, os_module.replace
+
+        def fsync(fd):
+            # The whole file has to be in it by now, or the sync covers less.
+            events.append(("fsync", os_module.fstat(fd).st_size))
+            return real_fsync(fd)
+
+        def replace(src, dst):
+            events.append(("replace", None))
+            return real_replace(src, dst)
+
+        target = folder / "bosch_tokens.json"
+        with (
+            patch.object(auth_module.os, "fsync", fsync),
+            patch.object(auth_module.os, "replace", replace),
+        ):
+            auth_module._save_json(target, data)
+
+        # Against the saved file rather than the JSON: Windows writes `\r\n`.
+        assert events == [("fsync", target.stat().st_size), ("replace", None)]
+        assert target.stat().st_size > 0
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits; Windows uses ACLs")
+    def test_a_loose_existing_file_is_replaced_by_an_owner_only_one(self, folder):
+        """Files written by a release that set no mode can be world-readable."""
+        import os as os_module
+
+        target = folder / "bosch_tokens.json"
+        target.write_text("{}")
+        os_module.chmod(target, 0o644)
+        auth_module._save_json(target, {"refresh_token": "fictional"})
+        assert oct(target.stat().st_mode & 0o777) == "0o600"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+    def test_a_symlinked_token_file_is_saved_where_the_link_points(self, folder):
+        """Replacing the link would leave its target, which anything else using
+        the real path reads, on a refresh token already spent."""
+        import os as os_module
+        from pathlib import Path
+
+        real = folder / "secrets" / "bosch_tokens.json"
+        real.parent.mkdir()
+        real.write_text('{"refresh_token": "old"}')
+        link = folder / "bosch_tokens.json"
+        link.symlink_to(real)
+        published = []
+        real_replace = os_module.replace
+
+        def spy(src, dst):
+            published.append(Path(src).parent)
+            return real_replace(src, dst)
+
+        with patch.object(auth_module.os, "replace", spy):
+            auth_module._save_json(link, {"refresh_token": "new"})
+
+        assert link.is_symlink()
+        assert json.loads(real.read_text()) == {"refresh_token": "new"}
+        # Beside the real file, since a rename cannot cross filesystems.
+        assert published == [real.parent]
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="the sharing rule retried is Windows'")
+    def test_a_save_waits_out_a_reader_holding_the_file_open(self, folder):
+        """The real refusal, not a stand-in for it: a reader holds the file
+        while the save runs, and lets go within the retries."""
+        import os as os_module
+        import threading
+
+        refused = []
+        real_replace = os_module.replace
+
+        def watch(src, dst):
+            try:
+                return real_replace(src, dst)
+            except PermissionError:
+                refused.append(src)
+                raise
+
+        target = folder / "bosch_tokens.json"
+        target.write_text('{"refresh_token": "old"}')
+        reader = open(target)
+        timer = threading.Timer(0.1, reader.close)
+        timer.start()
+        try:
+            with patch.object(auth_module.os, "replace", watch):
+                auth_module._save_json(target, {"refresh_token": "new"})
+        finally:
+            timer.join()
+            reader.close()
+        assert json.loads(target.read_text()) == {"refresh_token": "new"}
+        # Without a refusal this proves nothing about the retry.
+        assert refused, "Windows replaced a file another process had open"
+
+    def test_windows_retries_a_replace_another_reader_is_blocking(self, folder):
+        """Windows refuses to replace a file another process has open, and a
+        server sharing the file opens it on every request; `auth` cannot redo
+        the save once the authorisation code is spent."""
+        import os as os_module
+
+        attempts = []
+        real_replace = os_module.replace
+
+        def busy_twice(src, dst):
+            attempts.append(src)
+            if len(attempts) <= 2:
+                raise PermissionError(13, "Access is denied")
+            return real_replace(src, dst)
+
+        target = folder / "bosch_tokens.json"
+        with (
+            patch.object(auth_module.sys, "platform", "win32"),
+            patch.object(auth_module.os, "replace", busy_twice),
+            patch.object(auth_module.time, "sleep") as sleep,
+        ):
+            auth_module._save_json(target, {"refresh_token": "new"})
+
+        assert len(attempts) == 3
+        assert json.loads(target.read_text()) == {"refresh_token": "new"}
+        # Back-to-back retries would be over before a reader let go.
+        delays = [call.args[0] for call in sleep.call_args_list]
+        assert len(delays) == 2 and 0 < delays[0] < delays[1], delays
+
+    @pytest.mark.parametrize("platform,expected", [("linux", 1), ("win32", 5)])
+    def test_a_refused_replace_is_not_retried_elsewhere_or_forever(
+        self, folder, platform, expected
+    ):
+        """Off Windows the refusal is a real permission fault, and on Windows a
+        file that stays locked has to fail rather than hang the server."""
+        attempts = []
+
+        def refuse(src, dst):
+            attempts.append(src)
+            raise PermissionError(13, "Access is denied")
+
+        with (
+            patch.object(auth_module.sys, "platform", platform),
+            patch.object(auth_module.os, "replace", refuse),
+            patch.object(auth_module.time, "sleep"),
+            pytest.raises(PermissionError),
+        ):
+            auth_module._save_json(folder / "bosch_tokens.json", {"refresh_token": "new"})
+        assert len(attempts) == expected
+        assert list(folder.iterdir()) == []
 
 
 class _RecordingSocket:
@@ -1245,6 +1524,25 @@ class TestTheCodeExchangeReportsNoResponseContent:
             capsys,
             caplog,
             "Error: the token response carried no access token.",
+        )
+
+    def test_a_save_that_fails_reports_its_type_not_its_paths(self, monkeypatch, capsys, caplog):
+        """The save needs write access to the directory and, on Windows, a file
+        nobody holds open, and an OSError's text names the install's paths."""
+        body = json.dumps(
+            {"access_token": "at-SECRET-VALUE", "refresh_token": "rt-SECRET-VALUE"}
+        ).encode()
+
+        def refuse(path, data):
+            raise PermissionError(13, "Permission denied", "/home/someone/config/.tmpfile")
+
+        monkeypatch.setattr(auth_module, "_save_json", refuse)
+        self._run(
+            monkeypatch,
+            _responding(body),
+            capsys,
+            caplog,
+            "Error: the tokens could not be saved (PermissionError).",
         )
 
     def test_the_success_path_prints_neither_token(self, monkeypatch, capsys, caplog, tmp_path):
