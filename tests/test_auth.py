@@ -7,6 +7,7 @@ import socket
 import sys
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
+from urllib.parse import parse_qs
 
 import pytest
 
@@ -14,12 +15,8 @@ import bosch_flow_mcp.auth as auth_module
 from bosch_flow_mcp.config import CLIENT_ID
 
 
-@pytest.fixture(autouse=True)
-def reset_token_cache():
-    """Reset in-memory token cache before each test."""
-    auth_module._tokens = None
-    yield
-    auth_module._tokens = None
+def _write_tokens(path, **tokens):
+    path.write_text(json.dumps(tokens))
 
 
 def test_refresh_token_missing_file(tmp_path, monkeypatch):
@@ -34,26 +31,23 @@ def test_refresh_token_missing_file(tmp_path, monkeypatch):
         auth_module.refresh_token()
 
 
-def test_refresh_token_uses_cached_if_valid(tmp_path, monkeypatch):
-    """refresh_token returns cached token if not expired."""
-    future_expiry = datetime.now(timezone.utc).timestamp() + 3600
-    auth_module._tokens = {
-        "access_token": "cached_token_abc",
-        "refresh_token": "refresh_xyz",
-        "expiry": future_expiry,
-    }
+def test_refresh_token_uses_the_stored_token_if_valid(tmp_path, monkeypatch):
+    """refresh_token returns the stored token without a request if not expired."""
+    tokens_path = tmp_path / "tokens.json"
+    _write_tokens(
+        tokens_path,
+        access_token="stored_token_abc",
+        refresh_token="refresh_xyz",
+        expiry=datetime.now(timezone.utc).timestamp() + 3600,
+    )
+    monkeypatch.setattr("bosch_flow_mcp.auth.BOSCH_TOKENS_PATH", tokens_path)
     token = auth_module.refresh_token()
-    assert token == "cached_token_abc"
+    assert token == "stored_token_abc"
 
 
 def test_refresh_token_refreshes_when_expired(tmp_path, monkeypatch):
     """refresh_token calls token URL when access token is expired."""
     past_expiry = datetime.now(timezone.utc).timestamp() - 10
-    auth_module._tokens = {
-        "access_token": "old_token",
-        "refresh_token": "valid_refresh",
-        "expiry": past_expiry,
-    }
 
     fake_response_data = json.dumps(
         {
@@ -84,29 +78,22 @@ def test_refresh_token_refreshes_when_expired(tmp_path, monkeypatch):
         token = auth_module.refresh_token()
 
     assert token == "new_token_def"
-    assert auth_module._tokens["access_token"] == "new_token_def"
+    assert json.loads(tokens_path.read_text())["access_token"] == "new_token_def"
 
 
 def test_refresh_token_no_refresh_token_raises(tmp_path, monkeypatch):
-    """refresh_token raises RuntimeError if refresh_token is missing."""
-    past_expiry = datetime.now(timezone.utc).timestamp() - 10
-    auth_module._tokens = {
-        "access_token": "old_token",
-        "refresh_token": "",
-        "expiry": past_expiry,
-    }
+    """An expired token with no refresh token to renew it is a refusal."""
     tokens_path = tmp_path / "tokens.json"
-    tokens_path.write_text(json.dumps(auth_module._tokens))
+    _write_tokens(
+        tokens_path,
+        access_token="old_token",
+        refresh_token="",
+        expiry=datetime.now(timezone.utc).timestamp() - 10,
+    )
     monkeypatch.setattr("bosch_flow_mcp.auth.BOSCH_TOKENS_PATH", tokens_path)
 
     with pytest.raises(auth_module.TokenRefused, match="no refresh token"):
         auth_module.refresh_token()
-
-
-def test_invalidate_token_cache():
-    auth_module._tokens = {"access_token": "something"}
-    auth_module.invalidate_token_cache()
-    assert auth_module._tokens is None
 
 
 def test_client_id_is_one_bike_app():
@@ -169,6 +156,430 @@ def test_token_is_euda(token_as, client_id, expected):
 def test_token_is_euda_no_token_is_false():
     """No token file -> default one-bike-app -> not euda (and no crash on None)."""
     assert auth_module.token_is_euda() is False
+
+
+class TestTheTokenFileIsTheOnlyCopy:
+    """`bosch-flow-mcp auth` runs in another process while the server runs.
+
+    Each test writes real files at a temp path, because the property is about
+    what is on disk, not about anything the module holds. The refresh token is
+    treated as rotating, so a refreshed one left unsaved is a grant lost.
+    """
+
+    _REFRESHED = {"access_token": "tok-new", "refresh_token": "ref-new", "expires_in": 7200}
+
+    @pytest.fixture(autouse=True)
+    def _token_file(self, tmp_path, monkeypatch):
+        self.path = tmp_path / "bosch_tokens.json"
+        monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", self.path)
+
+    def _write(self, access="tok-old", refresh="ref-old", expiry=0.0, client_id=CLIENT_ID):
+        self.path.write_text(
+            json.dumps(
+                {
+                    "access_token": access,
+                    "refresh_token": refresh,
+                    "expiry": expiry,
+                    "client_id": client_id,
+                }
+            )
+        )
+
+    def _stored(self):
+        return json.loads(self.path.read_text())
+
+    @staticmethod
+    def _now():
+        return datetime.now(timezone.utc).timestamp()
+
+    @staticmethod
+    def _answer(payload):
+        resp = MagicMock()
+        resp.read.return_value = json.dumps(payload).encode()
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = lambda *a: None
+        return resp
+
+    def _urlopen_writing(self, then, raw=None, **tokens):
+        """An urlopen that rewrites the token file mid-request, then answers."""
+
+        def urlopen(request, timeout=None):
+            if raw is not None:
+                self.path.write_text(raw)
+            else:
+                self._write(**tokens)
+            if isinstance(then, Exception):
+                raise then
+            return self._answer(then)
+
+        return urlopen
+
+    @staticmethod
+    def _refusal(code):
+        import urllib.error
+
+        return urllib.error.HTTPError("https://example.invalid", code, "no", {}, io.BytesIO(b""))
+
+    def test_a_token_written_by_auth_is_used_without_a_restart(self):
+        """Held in memory, the old token stays in use after `auth` until a
+        restart, while routing already reads the new client from the file."""
+        import os
+
+        self._write(access="tok-aaaa", expiry=self._now() + 3600)
+        assert auth_module.refresh_token() == "tok-aaaa"
+        before = self.path.stat()
+        self.path.write_text(self.path.read_text().replace("tok-aaaa", "tok-bbbb"))
+        os.utime(self.path, ns=(before.st_atime_ns, before.st_mtime_ns))
+        assert auth_module.refresh_token() == "tok-bbbb"
+
+    def test_a_refresh_does_not_overwrite_a_grant_saved_while_it_ran(self):
+        """Saving over it loses the user's new grant.
+
+        The competing grant expires before the refreshed one would, as one
+        issued moments earlier does, so a comparison against the refreshed
+        expiry instead of the starting one fails here.
+        """
+        self._write(expiry=0)
+        urlopen = self._urlopen_writing(
+            self._REFRESHED, access="tok-auth", refresh="ref-auth", expiry=self._now() + 3600
+        )
+        with patch("urllib.request.urlopen", urlopen):
+            assert auth_module.refresh_token() == "tok-auth"
+        assert (self._stored()["access_token"], self._stored()["refresh_token"]) == (
+            "tok-auth",
+            "ref-auth",
+        )
+
+    @pytest.mark.parametrize("copy_expiry", [-100, 50], ids=["older", "later-but-expired"])
+    def test_a_refresh_saves_over_a_copy_it_cannot_use(self, copy_expiry):
+        """An older copy, or one whose token has expired, holds a refresh token
+        rotation has already retired; the one just issued is the live one."""
+        self._write(expiry=0)
+        urlopen = self._urlopen_writing(
+            self._REFRESHED, access="tok-copy", refresh="ref-copy", expiry=copy_expiry
+        )
+        with patch("urllib.request.urlopen", urlopen):
+            assert auth_module.refresh_token() == "tok-new"
+        assert self._stored()["refresh_token"] == "ref-new"
+
+    def test_a_refresh_does_not_overwrite_a_file_caught_mid_write(self):
+        """Unreadable after the refresh most likely means another writer is
+        part-way through, so the token just obtained is returned unsaved."""
+        self._write(expiry=0)
+        urlopen = self._urlopen_writing(self._REFRESHED, raw="{")
+        with patch("urllib.request.urlopen", urlopen):
+            assert auth_module.refresh_token() == "tok-new"
+        assert self.path.read_text() == "{"
+
+    @pytest.mark.parametrize("code", sorted(auth_module._REFUSAL_CODES))
+    def test_a_refusal_after_the_file_was_replaced_uses_the_new_file(self, code):
+        """The refusal judged a refresh token `auth` had already replaced.
+        Reporting it as a refusal tells the user to re-authorise over a working
+        grant."""
+        self._write(expiry=0)
+        urlopen = self._urlopen_writing(
+            self._refusal(code), access="tok-auth", refresh="ref-auth", expiry=self._now() + 3600
+        )
+        with patch("urllib.request.urlopen", urlopen):
+            assert auth_module.refresh_token() == "tok-auth"
+
+    @pytest.mark.parametrize(
+        "copy_expiry", [-100, 50, "usable"], ids=["older", "later-but-expired", "usable"]
+    )
+    def test_a_refusal_with_the_same_refresh_token_in_the_file_is_a_refusal(self, copy_expiry):
+        """The file changed in other fields, but still holds the refresh token
+        that was refused, so the refusal is a verdict on it, even where its
+        access token is still valid."""
+        if copy_expiry == "usable":
+            copy_expiry = self._now() + 3600
+        self._write(expiry=0)
+        urlopen = self._urlopen_writing(self._refusal(400), access="tok-copy", expiry=copy_expiry)
+        with patch("urllib.request.urlopen", urlopen):
+            with pytest.raises(auth_module.TokenRefused):
+                auth_module.refresh_token()
+
+    @pytest.mark.parametrize("copy_expiry", [-100, 50], ids=["older", "later-but-expired"])
+    def test_a_refusal_after_the_file_changed_to_an_unusable_grant_is_not_a_refusal(
+        self, copy_expiry
+    ):
+        """The refusal judged the refresh token sent, not the one now in the
+        file, so the next call refreshes with that one rather than this call
+        telling the user to re-authorise."""
+        self._write(expiry=0)
+        urlopen = self._urlopen_writing(
+            self._refusal(400), access="tok-copy", refresh="ref-copy", expiry=copy_expiry
+        )
+        with patch("urllib.request.urlopen", urlopen):
+            with pytest.raises(auth_module.RefreshNetworkError):
+                auth_module.refresh_token()
+
+    @pytest.mark.parametrize("client_id", [CLIENT_ID, "euda-00000000-0000-0000-0000-000000000009"])
+    def test_a_sign_in_to_either_client_saved_mid_request_wins(self, client_id):
+        """A re-auth can switch client, and that is the case routing follows:
+        saving the old sign-in back over it sends one client's token to the
+        other client's host."""
+        self._write(expiry=0)
+        urlopen = self._urlopen_writing(
+            self._REFRESHED,
+            access="tok-auth",
+            refresh="ref-auth",
+            expiry=self._now() + 3600,
+            client_id=client_id,
+        )
+        with patch("urllib.request.urlopen", urlopen):
+            assert auth_module.refresh_token() == "tok-auth"
+        assert self._stored()["client_id"] == client_id
+
+    def test_a_refresh_sends_and_keeps_the_client_the_token_was_issued_to(self):
+        """Routing reads the client back out of the file, so a refresh that
+        sent or saved another one would route to the wrong host."""
+        euda = "euda-00000000-0000-0000-0000-000000000009"
+        self._write(expiry=0, client_id=euda)
+        sent = []
+
+        def urlopen(request, timeout=None):
+            sent.append(parse_qs(request.data.decode())["client_id"][0])
+            return self._answer(self._REFRESHED)
+
+        with patch("urllib.request.urlopen", urlopen):
+            auth_module.refresh_token()
+        assert sent == [euda]
+        assert self._stored()["client_id"] == euda
+
+    @pytest.mark.parametrize("truncate", [False, True], ids=["file-intact", "file-emptied"])
+    def test_a_held_grant_that_expires_is_refreshed_with_its_own_refresh_token(self, truncate):
+        """The file's refresh token is the one the held grant replaced, and may
+        already be spent; sending it is refused, and reads as the file
+        unchanged, so the user is told to re-authorise over a live grant."""
+        self._write(expiry=0)
+        sent = []
+        answers = [
+            dict(self._REFRESHED, expires_in=0),
+            dict(self._REFRESHED, access_token="tok-long", refresh_token="ref-long"),
+        ]
+
+        def urlopen(request, timeout=None):
+            sent.append(parse_qs(request.data.decode())["refresh_token"][0])
+            return self._answer(answers.pop(0))
+
+        # Two failures, so the retry before the second refresh fails too and
+        # the file still holds ref-old when it runs.
+        with self._fail_saves(2, truncate=truncate), patch("urllib.request.urlopen", urlopen):
+            auth_module.refresh_token()
+            assert auth_module.refresh_token() == "tok-long"
+        assert sent == ["ref-old", "ref-new"]
+
+    def test_a_later_grant_that_wins_also_ends_a_held_one(self):
+        """Left held, a later unreadable moment saves the held grant, whose
+        refresh token this refresh has just spent, over the other writer's."""
+        self._write(expiry=0)
+        posts = []
+
+        def urlopen(request, timeout=None):
+            posts.append(request)
+            if len(posts) == 1:
+                return self._answer(dict(self._REFRESHED, expires_in=0))
+            self._write(access="tok-auth", refresh="ref-auth", expiry=self._now() + 3600)
+            return self._answer(self._REFRESHED)
+
+        # Two failures: the first refresh's save, and the retry before the
+        # second, so the grant is still held when the second refresh runs.
+        with self._fail_saves(2), patch("urllib.request.urlopen", urlopen):
+            auth_module.refresh_token()
+            assert auth_module.refresh_token() == "tok-auth"
+        assert len(posts) == 2
+        assert auth_module._unsaved is None
+
+    def test_a_re_read_file_with_a_blank_access_token_is_saved_over(self):
+        self._write(expiry=0)
+        urlopen = self._urlopen_writing(
+            self._REFRESHED, access="", refresh="ref-blank", expiry=self._now() + 3600
+        )
+        with patch("urllib.request.urlopen", urlopen):
+            assert auth_module.refresh_token() == "tok-new"
+        assert self._stored()["refresh_token"] == "ref-new"
+
+    def test_a_non_numeric_expiry_counts_as_expired(self):
+        self._write(expiry="soon")
+        with patch("urllib.request.urlopen", lambda *a, **k: self._answer(self._REFRESHED)):
+            assert auth_module.refresh_token() == "tok-new"
+        assert isinstance(self._stored()["expiry"], float)
+
+    def test_a_refresh_saves_when_the_clock_steps_back_during_it(self):
+        """The file is untouched and its token still looks valid by the stepped
+        clock; only the later-expiry test tells it from a grant someone saved,
+        and yielding to it leaves the file on a replaced refresh token."""
+        start = self._now()
+        clock = {"now": start}
+
+        class _SteppingDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime.fromtimestamp(clock["now"], tz)
+
+        self._write(expiry=start + 200)
+
+        def urlopen(request, timeout=None):
+            clock["now"] = start - 1000
+            return self._answer(self._REFRESHED)
+
+        with (
+            patch.object(auth_module, "datetime", _SteppingDatetime),
+            patch("urllib.request.urlopen", urlopen),
+        ):
+            assert auth_module.refresh_token() == "tok-new"
+        assert self._stored()["refresh_token"] == "ref-new"
+
+    def _fail_saves(self, times, truncate=False):
+        """A `_save_json` that raises OSError for its first `times` calls."""
+        real = auth_module._save_json
+        calls = {"n": 0}
+
+        def save(path, data):
+            calls["n"] += 1
+            if calls["n"] <= times:
+                if truncate:
+                    self.path.write_text("")
+                raise OSError(28, "No space left on device")
+            real(path, data)
+
+        return patch.object(auth_module, "_save_json", save)
+
+    @pytest.mark.parametrize("truncate", [False, True], ids=["file-intact", "file-emptied"])
+    def test_a_grant_whose_save_failed_is_kept_and_saved_later(self, truncate):
+        """The refresh token in the file may already be spent, so the refreshed
+        grant is the only live copy until a save succeeds."""
+        self._write(expiry=0)
+        posts = []
+
+        def urlopen(request, timeout=None):
+            posts.append(request)
+            return self._answer(self._REFRESHED)
+
+        with self._fail_saves(1, truncate=truncate), patch("urllib.request.urlopen", urlopen):
+            assert auth_module.refresh_token() == "tok-new"
+            assert auth_module.refresh_token() == "tok-new"
+        assert len(posts) == 1
+        assert self._stored()["refresh_token"] == "ref-new"
+        assert auth_module._unsaved is None
+
+    def test_a_held_grant_that_expires_is_refreshed_and_saved_over_its_own_empty_file(self):
+        """The file is empty because this process's save failed half-way, not
+        because another writer is mid-write, so the next refresh repairs it."""
+        self._write(expiry=0)
+        answers = [
+            self._answer(dict(self._REFRESHED, expires_in=0)),
+            self._answer(dict(self._REFRESHED, access_token="tok-long", refresh_token="ref-long")),
+        ]
+        with (
+            self._fail_saves(2, truncate=True),
+            patch("urllib.request.urlopen", lambda *a, **k: answers.pop(0)),
+        ):
+            auth_module.refresh_token()
+            assert auth_module.refresh_token() == "tok-long"
+        assert self._stored()["refresh_token"] == "ref-long"
+
+    def test_a_held_grant_is_used_and_saved_while_the_file_has_gone(self):
+        """A missing file counts as unreadable, and the held grant is the only
+        live copy: dropping it leaves nothing to refresh from."""
+        self._write(expiry=0)
+        posts = []
+
+        def urlopen(request, timeout=None):
+            posts.append(request)
+            return self._answer(self._REFRESHED)
+
+        with self._fail_saves(1), patch("urllib.request.urlopen", urlopen):
+            auth_module.refresh_token()
+            self.path.unlink()
+            assert auth_module.refresh_token() == "tok-new"
+        assert len(posts) == 1
+        assert self._stored()["refresh_token"] == "ref-new"
+
+    def test_a_held_grant_is_keyed_to_the_file_as_it_was_when_the_save_failed(self):
+        self._write(expiry=0)
+        posts = []
+
+        def urlopen(request, timeout=None):
+            posts.append(request)
+            self._write(access="tok-copy", refresh="ref-copy", expiry=-100)
+            return self._answer(self._REFRESHED)
+
+        with self._fail_saves(1), patch("urllib.request.urlopen", urlopen):
+            auth_module.refresh_token()
+            assert auth_module.refresh_token() == "tok-new"
+        assert len(posts) == 1
+        assert self._stored()["refresh_token"] == "ref-new"
+
+    def test_a_held_grant_gives_way_to_a_file_written_since(self):
+        self._write(expiry=0)
+        with (
+            self._fail_saves(1),
+            patch("urllib.request.urlopen", lambda *a, **k: self._answer(self._REFRESHED)),
+        ):
+            auth_module.refresh_token()
+        self._write(access="tok-auth", refresh="ref-auth", expiry=self._now() + 3600)
+        assert auth_module.refresh_token() == "tok-auth"
+        assert auth_module._unsaved is None
+
+    @pytest.mark.parametrize("truncate", [False, True], ids=["file-intact", "file-emptied"])
+    def test_a_refused_held_grant_is_a_refusal(self, truncate):
+        """Otherwise its refusal reads as a change to the file, which still
+        holds the token it replaced or was emptied by the failed write, and
+        every call refreshes with a dead token."""
+        self._write(expiry=0)
+        answers = [self._answer(dict(self._REFRESHED, expires_in=0)), self._refusal(400)]
+
+        def urlopen(request, timeout=None):
+            answer = answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        with self._fail_saves(9, truncate=truncate), patch("urllib.request.urlopen", urlopen):
+            auth_module.refresh_token()
+            with pytest.raises(auth_module.TokenRefused):
+                auth_module.refresh_token()
+        assert auth_module._unsaved is None
+
+    def test_a_refusal_while_the_file_is_unreadable_is_not_a_refusal(self):
+        """The file is most likely part-way through being replaced, which clears
+        on its own; a refusal would tell the user to re-authorise over it."""
+        self._write(expiry=0)
+        urlopen = self._urlopen_writing(self._refusal(400), raw="{")
+        with patch("urllib.request.urlopen", urlopen):
+            with pytest.raises(auth_module.RefreshNetworkError):
+                auth_module.refresh_token()
+
+    def test_concurrent_calls_refresh_once(self):
+        """Tool calls run in worker threads. Unserialised, two spend the same
+        refresh token."""
+        import threading
+
+        self._write(expiry=0)
+        posts = []
+        second = {}
+
+        def call_from_another_thread():
+            second["token"] = auth_module.refresh_token()
+
+        other = threading.Thread(target=call_from_another_thread)
+
+        def urlopen(request, timeout=None):
+            posts.append(request)
+            if len(posts) == 1:
+                other.start()
+                # Long enough for an unserialised second call to reach the
+                # network; with the lock it is still waiting when this returns.
+                other.join(timeout=0.5)
+            return self._answer(dict(self._REFRESHED, access_token=f"tok-{len(posts)}"))
+
+        with patch("urllib.request.urlopen", urlopen):
+            first = auth_module.refresh_token()
+            other.join(timeout=5)
+
+        assert len(posts) == 1
+        assert second["token"] == first
 
 
 class TestTheRefreshBoundary:

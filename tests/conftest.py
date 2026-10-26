@@ -82,9 +82,9 @@ def _isolate_credentials(tmp_path, monkeypatch):
     """Hermetic credentials: never read the developer's real token/config file.
 
     Points auth at non-existent paths so current_client_id() falls back to the
-    default (one-bike-app) unless a test writes its own token via token_as(). Resets
-    the in-memory token cache around every test. This is both correctness (the new
-    routing reads the token file) and public-repo data safety.
+    default (one-bike-app) unless a test writes its own token via token_as(). This
+    is both correctness (routing and refresh read the token file) and public-repo
+    data safety.
     """
     import bosch_flow_mcp.auth as auth_module
 
@@ -95,9 +95,8 @@ def _isolate_credentials(tmp_path, monkeypatch):
     present = tmp_path / "_auth_present.json"
     present.write_text(json.dumps({"access_token": "fake", "expiry": 9999999999}))
     monkeypatch.setattr("bosch_flow_mcp.helpers.BOSCH_TOKENS_PATH", present)
-    auth_module._tokens = None
-    yield
-    auth_module._tokens = None
+    # A grant held after a failed save outlives the test that failed the save.
+    monkeypatch.setattr(auth_module, "_unsaved", None)
 
 
 @pytest.fixture
@@ -123,7 +122,6 @@ def token_as(tmp_path, monkeypatch):
             )
         )
         monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", path)
-        auth_module._tokens = None
         return path
 
     return _set

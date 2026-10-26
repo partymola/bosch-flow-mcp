@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A running server now picks up the tokens written by `bosch-flow-mcp auth` without a restart. It read the token file once and kept using that copy. The sync meanwhile routed by the client named in the file. After switching between the standard and the EU Data Act sign-in, requests carried the old client's token to the new client's host and were refused. Once the old token expired, its refresh saved the old sign-in back over the new one.
+- A token refresh no longer saves over a grant that `bosch-flow-mcp auth` saved before the refresh finished. The newer grant wins while its access token is still valid.
+- A refused refresh is no longer reported as needing `bosch-flow-mcp auth` when the token file holds a different refresh token by then. The server uses the new token if it is still valid. Otherwise it reports a network error, and the next request refreshes from the file.
+- A refreshed token whose save fails is still kept by the running server, and the save is now retried on each request.
+
 ## [0.7.0] - 2026-09-05
 
 ### Fixed

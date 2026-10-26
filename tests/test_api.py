@@ -68,9 +68,29 @@ def test_get_429_raises_rate_limit():
 def test_get_401_retries_then_raises():
     err = HTTPError(url="", code=401, msg="Unauthorized", hdrs={}, fp=None)
     with patch("urllib.request.urlopen", side_effect=err):
-        with patch("bosch_flow_mcp.api.invalidate_token_cache"):
-            with pytest.raises(BoschAuthError, match="failed after retry"):
-                api_module.get("/some/path", retries=2)
+        with pytest.raises(BoschAuthError, match="failed after retry"):
+            api_module.get("/some/path", retries=2)
+
+
+def test_a_rejected_token_is_retried_with_the_token_file_as_it_is_now(tmp_path, monkeypatch):
+    """A 401 on a data request is answered by reading the file again, so a
+    token `bosch-flow-mcp auth` saved in the meantime is the one retried."""
+    tokens = tmp_path / "bosch_tokens.json"
+    tokens.write_text(json.dumps({"access_token": "tok-old", "expiry": 9999999999}))
+    monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", tokens)
+    monkeypatch.setattr(api_module, "refresh_token", auth_module.refresh_token)
+    sent = []
+
+    def urlopen(request, timeout=None):
+        sent.append(request.get_header("Authorization"))
+        if len(sent) == 1:
+            tokens.write_text(json.dumps({"access_token": "tok-new", "expiry": 9999999999}))
+            raise HTTPError(url="", code=401, msg="Unauthorized", hdrs={}, fp=None)
+        return _mock_urlopen({})
+
+    with patch("urllib.request.urlopen", urlopen):
+        api_module.get("/some/path")
+    assert sent == ["Bearer tok-old", "Bearer tok-new"]
 
 
 def test_get_network_error_raises():

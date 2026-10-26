@@ -19,7 +19,6 @@ import urllib.request
 from .auth import (
     RefreshNetworkError,
     TokenRefused,
-    invalidate_token_cache,
     refresh_token,
 )
 from .config import MOBILE_API_BASE
@@ -52,7 +51,7 @@ def get(path: str, base: str = MOBILE_API_BASE, retries: int = 3) -> dict | list
 
     Handles:
     - Automatic token refresh before each call
-    - 401: invalidate cache, refresh, retry once
+    - 401: retry, which reads the token file again
     - 429: raise BoschRateLimitError
     - 404: return None (resource not found / bike offline)
     - Other errors: raise BoschAPIError
@@ -90,8 +89,9 @@ def get(path: str, base: str = MOBILE_API_BASE, retries: int = 3) -> dict | list
         except urllib.error.HTTPError as e:
             if e.code == 401:
                 if attempt < retries - 1:
-                    logger.info("Token expired (401), refreshing and retrying")
-                    invalidate_token_cache()
+                    # The retry reads the token file again, which picks up a
+                    # token another process saved since this one was read.
+                    logger.info("Token rejected (401), retrying with the token file as it is now")
                     continue
                 raise BoschAuthError("Authentication failed after retry. Run: bosch-flow-mcp auth")
 

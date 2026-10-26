@@ -63,9 +63,17 @@ class RefreshNetworkError(RuntimeError):
     """
 
 
-# In-memory token cache - avoids re-reading the token file on every API call
-_tokens: dict | None = None
+# Tool calls run in worker threads. Without this, one can read the token file
+# while another is half-way through saving it, and two can spend the same
+# refresh token.
 _token_lock = threading.Lock()
+
+# A refreshed grant whose save failed: (the refresh token the file held when
+# the save failed, the grant). The refresh token is treated as rotating, so the
+# file's may already be spent and this the only live copy. It is used only
+# while the file still holds that token or cannot be read, an unreadable file
+# being taken for this process's own failed write.
+_unsaved: tuple[str | None, dict] | None = None
 
 # EUDA localhost callback port
 EUDA_CALLBACK_PORT = 4200
@@ -125,7 +133,9 @@ def _load_json(path) -> dict:
     Classified here rather than left to the caller: a file that is absent,
     unreadable or not a JSON object means there are no usable credentials,
     which is a refusal - unlike a transport failure it will not clear on its
-    own, and the user does have to re-authorise.
+    own, and the user does have to re-authorise. A refresh already in flight
+    reads the file through `_reread_tokens` instead, which takes the same
+    failure for another writer part-way through.
     """
     try:
         data = json.loads(path.read_text())
@@ -217,42 +227,106 @@ def _generate_pkce() -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 
+def _expiry(tokens: dict) -> float:
+    """The stored expiry, or 0 when it is unusable."""
+    value = tokens.get("expiry", 0)
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return 0
+    return value
+
+
+def _usable(tokens: dict) -> bool:
+    """Whether the stored access token can be sent, with the 5-minute buffer."""
+    now = datetime.now(timezone.utc).timestamp()
+    return bool(tokens.get("access_token")) and now < _expiry(tokens) - 300
+
+
+def _reread_tokens() -> dict | None:
+    """The token file as it is now, or None if it cannot be read."""
+    try:
+        return _load_json(BOSCH_TOKENS_PATH)
+    except TokenRefused:
+        return None
+
+
+def _replaced_by_a_later_grant(on_disk: dict, tokens: dict) -> bool:
+    """Whether `on_disk` is a grant saved since `tokens` was read, and usable.
+
+    Usable is what decides; later guards a clock that steps back during the
+    request, which would otherwise make the untouched file look new.
+    """
+    return _expiry(on_disk) > _expiry(tokens) and _usable(on_disk)
+
+
+def _current_tokens() -> dict:
+    """The token file, or the grant held after a failed save while it still applies."""
+    global _unsaved
+    if _unsaved is not None:
+        file_token, held = _unsaved
+        on_disk = _reread_tokens()
+        if on_disk is None or on_disk.get("refresh_token") == file_token:
+            _save(held, file_token)
+            return held
+        _unsaved = None
+    if not BOSCH_TOKENS_PATH.exists():
+        raise TokenRefused("Bosch not configured. Run: bosch-flow-mcp auth")
+    return _load_json(BOSCH_TOKENS_PATH)
+
+
+def _save(refreshed: dict, file_token: str | None) -> None:
+    """Save a refreshed grant, or hold it if the save fails.
+
+    `file_token` is the refresh token the file holds, which is what a held
+    grant is matched against on the next call.
+    """
+    global _unsaved
+    try:
+        _save_json(BOSCH_TOKENS_PATH, refreshed)
+    except OSError:
+        logger.warning("Could not save the refreshed token; holding it until a save succeeds")
+        _unsaved = (file_token, refreshed)
+    else:
+        _unsaved = None
+
+
 def _refresh_token() -> str:
     """Return a valid access token, refreshing if expired (5-min buffer).
 
-    Thread-safe. Raises RuntimeError if tokens are missing or refresh fails.
+    The token file is read on every call and nothing is kept between calls:
+    `bosch-flow-mcp auth` replaces it from another process while the server
+    runs, and `current_client_id` already routes by what the file says. A file
+    holding a later grant whose token is still valid was saved by another
+    writer during the request, and is used instead of being saved over. The
+    one exception is a grant whose save failed, held by `_current_tokens`
+    while the file still holds the token it replaced.
     """
-    global _tokens
-
+    global _unsaved
     with _token_lock:
-        if _tokens is None:
-            if not BOSCH_TOKENS_PATH.exists():
-                raise TokenRefused("Bosch not configured. Run: bosch-flow-mcp auth")
-            _tokens = _load_json(BOSCH_TOKENS_PATH)
+        tokens = _current_tokens()
+        file_token = _unsaved[0] if _unsaved is not None else tokens.get("refresh_token")
 
-        if not _tokens.get("access_token"):
+        if not tokens.get("access_token"):
             # Checked before the expiry, which is what made this a KeyError
             # rather than a verdict. Same rule as a wire response with no
             # token: the credentials on disk are unusable, and no amount of
             # waiting fixes that.
             raise TokenRefused("Token file has no access token. Run: bosch-flow-mcp auth")
 
-        now = datetime.now(timezone.utc).timestamp()
-        if now < _tokens.get("expiry", 0) - 300:
-            return _tokens["access_token"]
+        if _usable(tokens):
+            return tokens["access_token"]
 
-        if not _tokens.get("refresh_token"):
+        if not tokens.get("refresh_token"):
             raise TokenRefused("Token expired and no refresh token. Run: bosch-flow-mcp auth")
 
         # Use whichever client_id was used to obtain the token
-        client_id = _tokens.get("client_id", _get_client_id())
+        client_id = tokens.get("client_id", _get_client_id())
 
         # Public client refresh - no client_secret needed
         data = urlencode(
             {
                 "grant_type": "refresh_token",
                 "client_id": client_id,
-                "refresh_token": _tokens["refresh_token"],
+                "refresh_token": tokens["refresh_token"],
             }
         ).encode()
 
@@ -265,6 +339,26 @@ def _refresh_token() -> str:
             # code says about the credentials rather than by range: 429 and 408
             # are 4xx that carry no verdict at all.
             if e.code in _REFUSAL_CODES:
+                # A refusal judges the refresh token sent and nothing else. If
+                # the file now holds a different one, another writer replaced
+                # it, and the next call refreshes from it.
+                on_disk = _reread_tokens()
+                if on_disk is None and _unsaved is not None:
+                    # The held grant was refused, and the empty file is taken
+                    # for this process's own failed write, which holds nothing
+                    # newer.
+                    _unsaved = None
+                    raise TokenRefused("Token refresh failed. Run: bosch-flow-mcp auth") from e
+                if on_disk is None:
+                    logger.warning("Token refresh refused while the token file was unreadable")
+                    raise RefreshNetworkError("The token file was being replaced.") from e
+                _unsaved = None
+                if on_disk.get("refresh_token") not in (tokens.get("refresh_token"), file_token):
+                    if _usable(on_disk):
+                        logger.warning("Token refresh refused, but the token file was replaced")
+                        return on_disk["access_token"]
+                    logger.warning("Token refresh refused while the token file was changing")
+                    raise RefreshNetworkError("The token file changed during the refresh.") from e
                 raise TokenRefused("Token refresh failed. Run: bosch-flow-mcp auth") from e
             raise RefreshNetworkError("Bosch could not answer the refresh request.") from e
         except OSError as e:
@@ -280,15 +374,32 @@ def _refresh_token() -> str:
         if not isinstance(new_tokens, dict) or not new_tokens.get("access_token"):
             raise TokenRefused("Token refresh failed. Run: bosch-flow-mcp auth")
 
-        _tokens = {
+        refreshed = {
             "access_token": new_tokens["access_token"],
-            "refresh_token": new_tokens.get("refresh_token", _tokens["refresh_token"]),
+            "refresh_token": new_tokens.get("refresh_token", tokens["refresh_token"]),
             "token_type": new_tokens.get("token_type", "Bearer"),
-            "expiry": now + new_tokens.get("expires_in", 7200),
+            "expiry": datetime.now(timezone.utc).timestamp() + new_tokens.get("expires_in", 7200),
             "client_id": client_id,
         }
-        _save_json(BOSCH_TOKENS_PATH, _tokens)
-        return _tokens["access_token"]
+
+        # A grant another writer saved during the request wins. Anything else
+        # is saved over, since the refresh token just issued is known to be
+        # live. A file that cannot be read is most likely part-way through
+        # such a write, so it is left alone too, unless a grant is held: then
+        # the file is the one this process's own failed save emptied.
+        on_disk = _reread_tokens()
+        if on_disk is None and _unsaved is None:
+            logger.warning("Token file unreadable after refresh; not saving over it")
+            return refreshed["access_token"]
+        if on_disk is not None and _replaced_by_a_later_grant(on_disk, tokens):
+            logger.warning("A later grant was saved during the refresh; using it instead")
+            _unsaved = None
+            return on_disk["access_token"]
+
+        # Keyed to what the file holds now, which may have changed during the
+        # request: that is what the next call compares against.
+        _save(refreshed, on_disk.get("refresh_token") if on_disk is not None else file_token)
+        return refreshed["access_token"]
 
 
 def refresh_token() -> str:
@@ -306,13 +417,6 @@ def refresh_token() -> str:
     except Exception as e:
         logger.error("Token refresh failed: %s", type(e).__name__)
         raise RefreshNetworkError("Could not obtain a token from Bosch.") from e
-
-
-def invalidate_token_cache() -> None:
-    """Force re-read of token file on next refresh_token() call."""
-    global _tokens
-    with _token_lock:
-        _tokens = None
 
 
 # ---------------------------------------------------------------------------
@@ -523,7 +627,6 @@ def _exchange_code(client_id: str, code: str, verifier: str, redirect_uri: str) 
         "client_id": client_id,
     }
     _save_json(BOSCH_TOKENS_PATH, token_store)
-    invalidate_token_cache()
 
     print("\nAuth complete. Tokens saved to config/bosch_tokens.json")
     print("\nTry a sync:")
