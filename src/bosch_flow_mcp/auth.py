@@ -77,6 +77,10 @@ _token_lock = threading.Lock()
 # while the file still holds that token or cannot be read.
 _unsaved: tuple[str | None, dict] | None = None
 
+NO_REFRESH_TOKEN_MSG = (
+    "Bosch issued no refresh token, so run this again when the access token expires."
+)
+
 # EUDA localhost callback port
 EUDA_CALLBACK_PORT = 4200
 EUDA_REDIRECT_URI = f"http://localhost:{EUDA_CALLBACK_PORT}"
@@ -253,6 +257,13 @@ def _generate_pkce() -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 # Token refresh
 # ---------------------------------------------------------------------------
+
+
+def _filled(token) -> bool:
+    """Whether a token is RFC 6749's token syntax (A.12, A.17) and not only spaces."""
+    return (
+        isinstance(token, str) and token.isascii() and token.isprintable() and bool(token.strip())
+    )
 
 
 def _expiry(tokens: dict) -> float:
@@ -633,18 +644,21 @@ def _exchange_code(client_id: str, code: str, verifier: str, redirect_uri: str) 
         print("Error exchanging code: the response was not readable.", file=sys.stderr)
         sys.exit(1)
 
-    if not isinstance(tokens, dict) or "access_token" not in tokens:
+    if not isinstance(tokens, dict) or not _filled(tokens.get("access_token")):
         # Not the dict. The realistic shape here carries a refresh_token and no
         # access_token, so printing it to explain the failure puts a live
         # credential on the terminal. The isinstance guard is what keeps a JSON
-        # scalar or list from reaching the subscript below as a TypeError.
+        # scalar or list from reaching the `.get` as an AttributeError.
         print("Error: the token response carried no access token.", file=sys.stderr)
         sys.exit(1)
+
+    refresh = tokens.get("refresh_token")
+    refresh = refresh if _filled(refresh) else ""
 
     now = datetime.now(timezone.utc).timestamp()
     token_store = {
         "access_token": tokens["access_token"],
-        "refresh_token": tokens.get("refresh_token", ""),
+        "refresh_token": refresh,
         "token_type": tokens.get("token_type", "Bearer"),
         "expiry": now + tokens.get("expires_in", 7200),
         "client_id": client_id,
@@ -657,5 +671,7 @@ def _exchange_code(client_id: str, code: str, verifier: str, redirect_uri: str) 
         sys.exit(1)
 
     print("\nAuth complete. Tokens saved to config/bosch_tokens.json")
+    if not refresh:
+        print(NO_REFRESH_TOKEN_MSG)
     print("\nTry a sync:")
     print("  bosch-flow-mcp sync")

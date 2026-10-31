@@ -906,10 +906,10 @@ class TestAStoredTokenWithoutOneIsARefusal:
     def test_a_token_file_with_no_access_token(self, tmp_path, monkeypatch):
         """A file with no access token is refused, even with a refresh token in it.
 
-        _refresh_token saves only a response carrying a token. _exchange_code
-        checks only that the key is present, so it can save a blank one, and a
-        writer outside this repo can leave the key out. A half-written file fails
-        to parse and is refused before this check. The refusal is strict: the
+        _refresh_token and _exchange_code save only a response carrying a token,
+        so this file comes from a writer outside this repo, or from a release up
+        to 0.7.0, which could save a blank one from an exchange. A half-written
+        file fails to parse and is refused before this check. The refusal is strict: the
         check in _refresh_token runs before any refresh, so a live refresh token
         in the file goes unused. Letting such a file refresh means removing that
         check.
@@ -1475,6 +1475,107 @@ class TestTheCodeExchangeReportsNoResponseContent:
             "Error: the token response carried no access token.",
         )
 
+    @pytest.mark.parametrize(
+        "refresh",
+        [
+            {},
+            {"refresh_token": None},
+            {"refresh_token": ""},
+            {"refresh_token": "   "},
+            {"refresh_token": "a\nb"},
+            {"refresh_token": "a\tb"},
+            {"refresh_token": "a\rb"},
+            {"refresh_token": "a\x00b"},
+            {"refresh_token": "a\x7fb"},
+            {"refresh_token": "tök"},
+            {"refresh_token": 12345},
+        ],
+        ids=[
+            "omitted",
+            "null",
+            "blank",
+            "spaces",
+            "newline",
+            "tab",
+            "return",
+            "nul",
+            "delete",
+            "not-ascii",
+            "not-text",
+        ],
+    )
+    @pytest.mark.parametrize(
+        "existing",
+        [
+            None,
+            "{not json",
+            json.dumps({"refresh_token": "rt-other", "client_id": "cid"}),
+            json.dumps({"refresh_token": "rt-other"}),
+            json.dumps({"refresh_token": "rt-other", "client_id": "other"}),
+        ],
+        ids=["no-file", "unreadable", "same-client", "file-names-no-client", "other-client"],
+    )
+    def test_a_sign_in_with_no_usable_refresh_token_saves_none(
+        self, refresh, existing, monkeypatch, capsys, tmp_path
+    ):
+        """The same client is not the same account. A stored refresh token kept
+        beside this sign-in's access token may be another account's, and once
+        the access token expires the server silently serves that account's data."""
+        tokens_path = tmp_path / "bosch_tokens.json"
+        if existing is not None:
+            tokens_path.write_text(existing)
+        monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", tokens_path)
+        monkeypatch.setattr(auth_module, "_get_client_id", lambda: "cid")
+        body = json.dumps({"access_token": "at-new", **refresh}).encode()
+        monkeypatch.setattr(auth_module.urllib.request, "urlopen", _responding(body))
+
+        auth_module._exchange_code("cid", "the-code", "the-verifier", "http://localhost:1/cb")
+
+        stored = json.loads(tokens_path.read_text())
+        assert (stored["access_token"], stored["refresh_token"]) == ("at-new", "")
+        assert stored["client_id"] == "cid"
+        out = capsys.readouterr().out
+        assert "Auth complete" in out
+        assert auth_module.NO_REFRESH_TOKEN_MSG in out
+
+    def test_a_refresh_token_in_the_answer_replaces_the_stored_one(
+        self, monkeypatch, capsys, tmp_path
+    ):
+        tokens_path = tmp_path / "bosch_tokens.json"
+        tokens_path.write_text(json.dumps({"refresh_token": "rt-old", "client_id": "cid"}))
+        monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", tokens_path)
+        body = json.dumps({"access_token": "at-new", "refresh_token": "rt-new"}).encode()
+        monkeypatch.setattr(auth_module.urllib.request, "urlopen", _responding(body))
+
+        auth_module._exchange_code("cid", "the-code", "the-verifier", "http://localhost:1/cb")
+
+        assert json.loads(tokens_path.read_text())["refresh_token"] == "rt-new"
+        assert auth_module.NO_REFRESH_TOKEN_MSG not in capsys.readouterr().out
+
+    @pytest.mark.parametrize(
+        "token",
+        ["", "   ", "a\nb", "tök", None, 12345],
+        ids=["blank", "spaces", "newline", "not-ascii", "null", "not-text"],
+    )
+    def test_a_token_that_cannot_be_sent_fails_and_saves_nothing(
+        self, token, monkeypatch, capsys, caplog, tmp_path
+    ):
+        """Saved, it reports success, replaces a working file, and every later
+        call is refused."""
+        tokens_path = tmp_path / "bosch_tokens.json"
+        tokens_path.write_text('{"access_token": "at-old", "refresh_token": "rt-old"}')
+        monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", tokens_path)
+        body = json.dumps({"access_token": token, "refresh_token": "rt-SECRET-VALUE"}).encode()
+
+        self._run(
+            monkeypatch,
+            _responding(body),
+            capsys,
+            caplog,
+            "Error: the token response carried no access token.",
+        )
+        assert tokens_path.read_text() == '{"access_token": "at-old", "refresh_token": "rt-old"}'
+
     def test_a_transport_failure_reports_only_its_type(self, monkeypatch, capsys, caplog):
         """`str(e)` carries text the peer influences.
 
@@ -1516,8 +1617,8 @@ class TestTheCodeExchangeReportsNoResponseContent:
         )
 
     def test_a_json_scalar_is_refused_rather_than_subscripted(self, monkeypatch, capsys, caplog):
-        # `"access_token" not in 42` is a TypeError, so the shape check needs
-        # the isinstance guard to reach its own message.
+        # `42` has no `.get`, so the shape check needs the isinstance guard to
+        # reach its own message.
         self._run(
             monkeypatch,
             _responding(b"42"),
