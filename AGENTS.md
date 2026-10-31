@@ -48,3 +48,5 @@ Nothing in the suite fails if these break, so check them by execution when they 
 ## Test conventions
 
 Tests are fully offline - no real API calls or tokens - and use temporary SQLite databases (`tmp_path` fixture), never the real DB. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to run them.
+
+**The autouse `_no_network` fixture in `tests/conftest.py` is what holds "offline".** It replaces `urllib.request.urlopen`, the only call `src/` makes a request through, so a test that reaches for it fails, and one that means to serve a request patches `urlopen` itself. The refusal is `pytest.fail` rather than `assert` because `refresh_token` and `run_sync` end in `except Exception`, which absorbs an `AssertionError`; `Failed` derives from `BaseException`. A raw thread keeps `Failed` to itself and pytest reports that only as a warning, so `pyproject.toml` turns that warning into an error. Pinned by `tests/test_harness.py`, since deleting the fixture fails nothing else. It sees `urlopen` alone: a route through `http.client` or a socket would pass it.

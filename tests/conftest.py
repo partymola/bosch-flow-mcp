@@ -5,6 +5,7 @@ frame numbers, or personal information.
 """
 
 import json
+import urllib.request
 
 import pytest
 
@@ -97,6 +98,20 @@ def _isolate_credentials(tmp_path, monkeypatch):
     monkeypatch.setattr("bosch_flow_mcp.helpers.BOSCH_TOKENS_PATH", present)
     # A grant held after a failed save outlives the test that failed the save.
     monkeypatch.setattr(auth_module, "_unsaved", None)
+
+
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch):
+    """Refuse a real request. A test that serves one patches `urlopen` itself.
+
+    `pytest.fail` rather than `assert`: `refresh_token` and `run_sync` end in
+    `except Exception`, which would absorb an `AssertionError`.
+    """
+
+    def refuse(*_args, **_kwargs):
+        pytest.fail("this test reached the network; patch urllib.request.urlopen to serve it")
+
+    monkeypatch.setattr(urllib.request, "urlopen", refuse)
 
 
 @pytest.fixture

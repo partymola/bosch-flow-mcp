@@ -909,10 +909,11 @@ class TestAStoredTokenWithoutOneIsARefusal:
         _refresh_token and _exchange_code save only a response carrying a token,
         so this file comes from a writer outside this repo, or from a release up
         to 0.7.0, which could save a blank one from an exchange. A half-written
-        file fails to parse and is refused before this check. The refusal is strict: the
-        check in _refresh_token runs before any refresh, so a live refresh token
-        in the file goes unused. Letting such a file refresh means removing that
-        check.
+        file fails to parse and is refused before this check. The refusal is
+        strict: the check in _refresh_token runs before any refresh, so a live
+        refresh token in the file goes unused, and `_no_network` fails this test
+        if a refresh is attempted. Letting such a file refresh means removing
+        that check.
         """
         path = tmp_path / "bosch_tokens.json"
         path.write_text(
