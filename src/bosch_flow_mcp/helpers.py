@@ -91,8 +91,8 @@ def _parse_single_date(date_str: str | None, default: date, is_end: bool) -> dat
 
     # The regexes match the shape; the constructors reject the value. A month
     # of 13 or a 30th of February passes the pattern and raises a bare
-    # ValueError from the stdlib, which is the likelier slip of the two and
-    # was reaching the caller as "Unexpected error".
+    # ValueError from the stdlib, which is the likelier slip of the two. Left
+    # bare it would reach the caller as "Unexpected error".
     try:
         if re.match(r"^\d{4}-\d{2}$", date_str):
             year, month = int(date_str[:4]), int(date_str[5:7])

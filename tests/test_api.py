@@ -111,9 +111,8 @@ def test_get_500_raises_api_error():
 class TestRefreshFailuresReachCallersClassified:
     """api.get maps the two types refresh_token guarantees, and nothing else.
 
-    The messages are asserted by equality because they reach the MCP client
-    and are written to sync_log: the original can carry an absolute config
-    path, which is what interpolating it used to do.
+    The messages are asserted by equality, so they stay fixed text and carry
+    nothing of the exception they replace.
     """
 
     def _get_with_refresh_raising(self, exc, monkeypatch):
@@ -140,7 +139,7 @@ class TestNothingLoggedCarriesTheRequestPath:
     """An MCP client captures this server's stderr to a file on disk.
 
     Some request paths carry a part number and a battery serial, so a log
-    line naming one writes it to disk just as surely as the sync log did.
+    line naming one writes it to disk.
     """
 
     def test_a_403_logs_the_host_not_the_path(self, monkeypatch, caplog):

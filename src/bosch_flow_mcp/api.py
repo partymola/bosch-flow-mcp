@@ -68,8 +68,8 @@ def get(path: str, base: str = MOBILE_API_BASE, retries: int = 3) -> dict | list
         except RefreshNetworkError as e:
             # Not an auth failure: an unreachable server says nothing about the
             # credentials, and advising re-auth would spend a working refresh
-            # token. The messages are fixed rather than built from the
-            # original, which can carry an absolute config path.
+            # token. The messages are fixed text rather than the exception's,
+            # pinned by TestRefreshFailuresReachCallersClassified.
             raise BoschAPIError("Network error. Check your connection.") from e
 
         url = f"{base}{path}"

@@ -650,7 +650,7 @@ class TestTheRefreshBoundary:
             self._refresh_with_worker_raising(exc, monkeypatch)
 
     def test_a_non_http_response_becomes_a_network_error(self, monkeypatch):
-        """http.client exceptions are not OSError, so they escaped every tuple."""
+        """BadStatusLine is not an OSError, so a catch limited to OSError would miss it."""
         import http.client
 
         with pytest.raises(auth_module.RefreshNetworkError):
@@ -772,8 +772,8 @@ class TestTheRoutingHelpersNeverRaise:
 
     _load_json classifies an unusable credential file as TokenRefused, which
     is right for the refresh path. These two answer "which client is in use"
-    for routing, and sync_tools calls one before its try block - so a corrupt
-    token file used to take the whole sync out with an unclassified error.
+    for routing. sync_tools calls one before its try block, so a corrupt token
+    file raising there would stop the whole sync.
     """
 
     @pytest.mark.parametrize(
@@ -800,7 +800,7 @@ class TestTheRoutingHelpersNeverRaise:
 
 
 class TestRefusalsAreNotNetworkConditions:
-    """The refusal sites the commit named, each pinned to the right class."""
+    """Some of the sites that find the credentials unusable, pinned to the right class."""
 
     def _refresh_with_response(self, payload, tmp_path, monkeypatch):
         path = tmp_path / "bosch_tokens.json"
@@ -904,14 +904,15 @@ class TestTheFallbackKeepsTheConfiguredClient:
 
 class TestAStoredTokenWithoutOneIsARefusal:
     def test_a_token_file_with_no_access_token(self, tmp_path, monkeypatch):
-        """The expiry check ran first, so this escaped api.get as a KeyError.
+        """A file with no access token is refused, even with a refresh token in it.
 
-        Reaching this state needs a writer outside this repo: _exchange_code and
-        _refresh_token both always store an access_token, and a half-written file
-        fails to parse and is refused before this check. Note the refusal is
-        strict - a file holding a live refresh_token would have refreshed - so if
-        a future writer can produce this state, guard the early return rather
-        than relax this test.
+        _refresh_token saves only a response carrying a token. _exchange_code
+        checks only that the key is present, so it can save a blank one, and a
+        writer outside this repo can leave the key out. A half-written file fails
+        to parse and is refused before this check. The refusal is strict: the
+        check in _refresh_token runs before any refresh, so a live refresh token
+        in the file goes unused. Letting such a file refresh means removing that
+        check.
         """
         path = tmp_path / "bosch_tokens.json"
         path.write_text(
@@ -1286,7 +1287,7 @@ class TestTheCallbackPortIsNotShared:
         ), calls
 
     def test_reuse_is_allowed_off_windows_and_refused_on_it(self):
-        """Not asking to share is the fix; the exclusive option is the belt.
+        """Address reuse is asked for off Windows and not on it.
 
         The runtime value alone cannot see a revert to a bare `True`, because
         that is what this platform is supposed to have, so the source form is
@@ -1353,10 +1354,9 @@ class TestTheCallbackPortIsNotShared:
         """The only test that reaches the EUDA flow, and it patches the name the
         flow constructs: patching `HTTPServer` instead guards nothing.
 
-        A port that is already held is a failure the flow could not have before,
-        so it has to end in advice rather than a traceback - and it has to end
-        there before an authorisation page is opened onto a redirect with
-        nowhere to land.
+        A port that is already held has to end in advice rather than a traceback.
+        It has to end there before an authorisation page is opened onto a
+        redirect with nowhere to land.
         """
         opened = []
         monkeypatch.setattr(auth_module.webbrowser, "open", lambda url: opened.append(url))

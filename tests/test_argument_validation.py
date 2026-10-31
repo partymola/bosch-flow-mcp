@@ -1,10 +1,10 @@
 """An enumerated argument must be refused, never answered under the wrong label.
 
-`bosch_battery_trends(period="not-a-period")` fell through to monthly and
-echoed the value it was given, so it returned correct monthly buckets under
-`"period": "not-a-period"`. Nothing was empty, nothing raised, and nothing
-about the reply looked wrong, which is worse than an error: a caller cannot
-tell it from a correct one.
+The `period` annotation refuses `bosch_battery_trends(period="not-a-period")`
+before the body runs. The reply echoes `period`, so any path that answered such
+a value would return real buckets under `"period": "not-a-period"`. Nothing
+would be empty, nothing would raise, and nothing about the reply would look
+wrong, which is worse than an error: a caller cannot tell it from a correct one.
 
 The calls here go through `mcp.call_tool`, the only layer that applies the
 argument schema. Calling the Python function directly skips it, so a test
@@ -87,7 +87,7 @@ PERIOD_KEY_SHAPE = {
 
 # Two dates that must land in different buckets of the same period. A shape
 # alone cannot see a key function that returns a constant within its family,
-# which is how `_quarter_key` could have answered Q1 for the whole year.
+# such as a broken quarterly one answering Q1 for the whole year.
 PERIOD_APART = {
     "weekly": ("2026-03-02T00:00:00Z", "2026-03-30T00:00:00Z"),
     "monthly": ("2026-03-15T00:00:00Z", "2026-04-15T00:00:00Z"),

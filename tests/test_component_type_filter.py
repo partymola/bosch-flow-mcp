@@ -1,9 +1,9 @@
 """A component_type the cache cannot match is refused, not answered empty.
 
-`bosch_get_components(component_type="not-a-component")` came back as
-`{"components": [], "count": 0}`, and so did `component_type="DRIVEUNIT"`.
-Both read as a bike that has no such component rather than as a filter the
-server could not use, and wrong case was enough to produce one.
+An answer of `{"components": [], "count": 0}` to
+`bosch_get_components(component_type="not-a-component")` would read as a bike
+that has no such component rather than as a filter the server could not use.
+Case is ignored, so `DRIVEUNIT` answers with the stored `driveUnit` rows.
 
 The types are the provider's vocabulary rather than a set this server defines,
 so an annotation cannot hold them and the cache is what says which exist. One
@@ -153,7 +153,7 @@ def test_every_spelling_of_one_type_answers_together(db_file, asked):
     the same battery reaches the cache as `battery` and as `Battery`.
     Resolving to whichever sorts first drops the rows under the other and
     replaces a correct answer with a confident partial one, which is worse
-    than the empty list this filter was fixed to stop returning.
+    than an empty list.
     """
     add_component(db_file, FAKE_BIKE_ID, "Battery", "SN111111")
 
@@ -190,9 +190,9 @@ def test_a_type_outside_ascii_answers_in_another_case(db_file):
 def test_the_query_layer_reads_no_spellings_as_no_rows(db_file):
     """An empty list is a narrowed question, never an unfiltered one.
 
-    Nothing reaches this today, since the tool refuses before the list can
-    come out empty. The signature takes a sequence now, so the next caller
-    to compute one is who this is for.
+    Nothing reaches this, since the tool refuses before the list can come
+    out empty. The signature takes a sequence, so a future caller that
+    computes one is who this is for.
     """
     from bosch_flow_mcp import db
 

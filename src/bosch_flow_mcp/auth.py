@@ -87,10 +87,10 @@ class _CallbackServer(HTTPServer):
 
     Deliberate, and not what `HTTPServer` does by default: it asks for address
     reuse, which on Windows is what lets another process bind over this
-    listener and take the code. Not asking is the fix; the exclusive-use
-    option is asked for as well. Why each half is there, and what it costs, is
-    in AGENTS.md. Pinned by TestTheCallbackPortIsNotShared, which drives this
-    method's Windows branch on a POSIX runner.
+    listener and take the code. Not asking is what closes that; the
+    exclusive-use option is asked for as well. Why each half is there, and
+    what it costs, is in AGENTS.md. Pinned by TestTheCallbackPortIsNotShared,
+    which drives this method's Windows branch on a POSIX runner.
     """
 
     allow_reuse_address = sys.platform != "win32"
@@ -336,10 +336,10 @@ def _refresh_token() -> str:
         file_token = _unsaved[0] if _unsaved is not None else tokens.get("refresh_token")
 
         if not tokens.get("access_token"):
-            # Checked before the expiry, which is what made this a KeyError
-            # rather than a verdict. Same rule as a wire response with no
-            # token: the credentials on disk are unusable, and no amount of
-            # waiting fixes that.
+            # A policy choice, made before the expiry and before any refresh: a
+            # file with no access token is refused even if it holds a refresh
+            # token that could be tried. A wire response with no token is
+            # refused the same way. Waiting does not change the file.
             raise TokenRefused("Token file has no access token. Run: bosch-flow-mcp auth")
 
         if _usable(tokens):
@@ -514,9 +514,8 @@ def _setup_euda_auth() -> None:
     print(f"\nBosch eBike Flow auth (EUDA: {client_id[:20]}...)")
     print("=" * 50)
 
-    # Bind before opening the browser: the listener no longer asks to share the
-    # port, so a busy one is now a real failure, and sending the user to an
-    # authorisation page whose redirect has nowhere to land wastes the attempt.
+    # Bind before opening the browser: sending the user to an authorisation
+    # page whose redirect has nowhere to land wastes the attempt.
     try:
         server = _CallbackServer(("localhost", EUDA_CALLBACK_PORT), CallbackHandler)
     except OSError:

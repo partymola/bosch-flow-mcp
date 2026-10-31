@@ -66,12 +66,11 @@ def test_parse_date_december_month_end():
 
 
 class TestTheAuthGate:
-    """Every tool is wrapped in require_auth, and nothing pinned either half.
+    """Every tool is wrapped in require_auth, and its two halves are pinned here.
 
     The gate must refuse when there are no credentials, and must turn an
-    exception into a tool result rather than letting it escape as a transport
-    error - the four API exception types are siblings off Exception, so a live
-    read catches none of them on its own.
+    exception into a tool result rather than letting it escape. The cached tools
+    catch nothing themselves, and the live reads do not catch a rate limit.
     """
 
     def _tool(self, monkeypatch, tokens_exist, body):
@@ -146,10 +145,7 @@ class TestTheAuthGate:
 
 
 def test_every_tool_is_gated():
-    """`require_auth` on every tool is the first line of the gate's own claim.
-
-    Removing the decorator from any one tool left the suite green.
-    """
+    """`require_auth` on every tool is the first line of the gate's own claim."""
     import importlib
     import pkgutil
 
@@ -164,7 +160,7 @@ def test_every_tool_is_gated():
                 continue
             # The marker require_auth sets, not functools.wraps' __wrapped__:
             # any decorator sets that, so a refactor adding a timing wrapper
-            # while dropping the gate would have gone unnoticed.
+            # while dropping the gate would go unnoticed.
             if not getattr(obj, "__requires_auth__", False):
                 ungated.append(f"{module_info.name}.{name}")
 
@@ -174,8 +170,9 @@ def test_every_tool_is_gated():
 class TestDateValuesThatPassTheShapeCheck:
     """A month of 13 passes the regex and fails in the constructor.
 
-    That is a likelier model slip than a word, and it was reaching the
-    caller as "Unexpected error (ValueError)" - no guidance, no retry.
+    That is a likelier model slip than a word. Left as a bare ValueError it
+    would reach the caller as "Unexpected error (ValueError)", with no guidance
+    to retry on.
     """
 
     @pytest.mark.parametrize(

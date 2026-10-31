@@ -176,7 +176,7 @@ async def test_soc_forbidden_is_graceful():
 
 
 async def test_soc_none_keeps_offline_message():
-    """Regression: a None response (404/offline) still gives the offline hint."""
+    """A None response (404/offline) gives the offline hint."""
     from bosch_flow_mcp.tools import battery_tools
 
     with patch("bosch_flow_mcp.tools.battery_tools.api.get", return_value=None):

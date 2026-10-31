@@ -138,9 +138,8 @@ async def test_components_no_note_when_populated(note_db):
 def test_the_types_own_diagnostic_wins_over_the_bikes_fallback(tmp_path, monkeypatch):
     """Both rows present is the only case that distinguishes the order.
 
-    Each existing test sets one type or the other, so the precedence
-    between them was unpinned - and reversed, the model is handed the stale
-    bikes explanation in place of the specific one.
+    Reversed, the model is handed the bikes explanation in place of the
+    specific one.
     """
     import bosch_flow_mcp.db as db_module
     from bosch_flow_mcp.helpers import empty_data_note

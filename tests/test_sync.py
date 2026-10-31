@@ -196,12 +196,9 @@ def test_auto_sync_retries_after_error_today(tmp_path, monkeypatch):
 
 
 def test_an_auth_failure_is_recorded_in_the_sync_log(tmp_path):
-    """Every failure run_sync swallows must leave a row behind.
+    """An auth failure must leave a row behind.
 
-    The API-error branch logged and the auth branch did not, so the one
-    failure that will not clear itself was the one leaving no trace: the run
-    reported it once and afterwards queries carried on serving the cache with
-    nothing saying why it had stopped growing.
+    A dead token will not clear itself, so it is the failure worth finding later.
     """
     import os
 
@@ -350,11 +347,10 @@ class TestNoRequestPathReachesTheSyncLogOrAModel:
         assert rows and rows[0][0] == "error"
 
     def test_a_database_that_cannot_take_the_row_does_not_end_the_run(self, tmp_path, monkeypatch):
-        """Writing the row is itself a database write.
+        """Writing the failure row is itself a database write.
 
-        A locked database - a CLI sync alongside an MCP session - raised
-        here, escaping the very catch-all that exists to keep the remaining
-        types going, so the rest of the sync was never attempted.
+        A locked database when recording a failure, as with a CLI sync alongside
+        an MCP session, must not stop the remaining types.
         """
         from bosch_flow_mcp import api
         from bosch_flow_mcp.tools import sync_tools as st
@@ -386,7 +382,9 @@ class TestNoRequestPathReachesTheSyncLogOrAModel:
 
 
 class TestTheDispatchOrderSatisfiesItsDependencies:
-    """Declared in AGENTS.md and in a comment, pinned by nothing until now.
+    """A comment on the dispatch declares the order.
+
+    AGENTS.md also declares components before capacity.
 
     A dict literal is exactly the thing someone tidies alphabetically, and
     the breach is silent: capacity reads part and serial numbers from the

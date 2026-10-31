@@ -170,7 +170,7 @@ def test_euda_data_act_only_runs_on_data_act(token_as, routed_db, dtype):
     assert MOBILE_API_BASE not in _bases_used(record)
 
 
-# --- The euda-empty (non-EU) trap: the original 2-month silent failure ---
+# --- The euda-empty (non-EU) trap: a silent zero ---
 
 
 def test_euda_empty_bikes_emits_signal_not_silent_zero(token_as, routed_db):
@@ -187,8 +187,8 @@ def test_euda_empty_bikes_emits_signal_not_silent_zero(token_as, routed_db):
 
 @pytest.mark.parametrize("dtype", ["batteries", "components"])
 def test_euda_empty_derived_type_emits_signal_when_called_first(token_as, routed_db, dtype):
-    """Calling a bike-derived tool directly on a euda non-EU account must still signal,
-    not return a silent ok/0 (regression for the call-order gap)."""
+    """Syncing a bike-derived type with no bikes synced first, on a euda non-EU account,
+    must still signal, not report a silent ok/0."""
     token_as("euda-test")
     record = []
     mock = make_api_mock(record, empty_bikes=True)
