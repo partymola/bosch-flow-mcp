@@ -1,5 +1,6 @@
 """Shared utilities for the Bosch Flow MCP server."""
 
+import calendar
 import functools
 import json
 import logging
@@ -85,26 +86,22 @@ def _parse_single_date(date_str: str | None, default: date, is_end: bool) -> dat
     if date_str is None:
         return default
 
-    m = _RELATIVE_RE.match(date_str)
-    if m:
-        return date.today() - timedelta(days=int(m.group(1)))
-
-    # The regexes match the shape; the constructors reject the value. A month
-    # of 13 or a 30th of February passes the pattern and raises a bare
-    # ValueError from the stdlib, which is the likelier slip of the two. Left
-    # bare it would reach the caller as "Unexpected error".
+    # The regexes match the shape; the stdlib rejects the value. A month of 13,
+    # a 30th of February or a count of days reaching past year 1 passes the
+    # pattern and raises a bare ValueError or OverflowError. Left bare it would
+    # reach the caller as "Unexpected error".
     try:
+        m = _RELATIVE_RE.match(date_str)
+        if m:
+            return date.today() - timedelta(days=int(m.group(1)))
+
         if re.match(r"^\d{4}-\d{2}$", date_str):
             year, month = int(date_str[:4]), int(date_str[5:7])
-            if is_end:
-                if month == 12:
-                    return date(year + 1, 1, 1) - timedelta(days=1)
-                return date(year, month + 1, 1) - timedelta(days=1)
-            return date(year, month, 1)
+            return date(year, month, calendar.monthrange(year, month)[1] if is_end else 1)
 
         if re.match(r"^\d{4}-\d{2}-\d{2}$", date_str):
             return date.fromisoformat(date_str)
-    except ValueError as e:
+    except (ValueError, OverflowError) as e:
         raise InvalidDateError(
             f"Invalid date '{date_str}'. Use YYYY-MM-DD, YYYY-MM, or Nd (e.g. '30d')."
         ) from e

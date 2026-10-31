@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A locked database no longer stops a sync part-way. If the sync log could not be written after a type finished, the remaining types never ran. The type now reports its result as usual and the other types run. The log shows that type's previous outcome until a later row lands. The next read syncs it again unless it already synced today.
 - `bosch-flow-mcp auth` reports a failed exchange when the access token is blank or not valid token text. It printed `Auth complete` and saved that token over the existing file, and every later call was refused. The existing file is now left alone.
 - `bosch-flow-mcp auth` treats an unusable refresh token in the response as missing. It saved that token, and the next refresh was refused. It now saves no refresh token and says to run it again when the access token expires. An earlier sign-in's refresh token is not reused, since it may belong to another account.
+- A date tool refuses month `00` as its end date. `2026-00` read as 31 December 2025 and answered with real data for the wrong range.
+- A day count too large to compute, such as `99999999d`, now gets the accepted formats back rather than an unexpected error. So does `0000-12` as an end date. `9999-12` is now accepted as an end date.
 
 ## [0.7.0] - 2026-09-05
 

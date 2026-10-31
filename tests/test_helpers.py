@@ -175,13 +175,46 @@ class TestDateValuesThatPassTheShapeCheck:
     to retry on.
     """
 
+    @pytest.mark.parametrize("position", ["start", "end"])
     @pytest.mark.parametrize(
-        "bad", ["2026-13-01", "2026-02-30", "2026-13", "2026-00-01", "last week"]
+        "bad",
+        [
+            "2026-13-01",
+            "2026-02-30",
+            "2026-13",
+            "2026-00",
+            "2026-00-01",
+            "0000-01",
+            "0000-12",
+            "99999999d",
+            "9999999999d",
+            pytest.param("9" * 5000 + "d", id="more-digits-than-int-reads"),
+            "last week",
+        ],
     )
-    def test_it_keeps_the_guidance(self, bad):
+    def test_it_keeps_the_guidance(self, bad, position):
         from bosch_flow_mcp.helpers import InvalidDateError, parse_date
 
         with pytest.raises(InvalidDateError) as exc_info:
-            parse_date(bad)
+            if position == "start":
+                parse_date(bad)
+            else:
+                parse_date(None, bad)
         assert "YYYY-MM-DD" in str(exc_info.value)
         assert bad in str(exc_info.value)
+
+    @pytest.mark.parametrize(
+        "month,last_day",
+        [
+            ("2026-01", 31),
+            ("2026-02", 28),
+            ("2024-02", 29),
+            ("2026-04", 30),
+            ("2026-11", 30),
+            ("2026-12", 31),
+            ("9999-12", 31),
+        ],
+    )
+    def test_a_month_runs_from_its_first_day_to_its_last(self, month, last_day):
+        year, number = int(month[:4]), int(month[5:])
+        assert parse_date(month, month) == (date(year, number, 1), date(year, number, last_day))
