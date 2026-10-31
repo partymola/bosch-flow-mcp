@@ -399,10 +399,26 @@ class TestTheTokenFileIsTheOnlyCopy:
             {"refresh_token": ""},
             {"refresh_token": "   "},
             {"refresh_token": "a\nb"},
+            {"refresh_token": "a\tb"},
+            {"refresh_token": "a\rb"},
+            {"refresh_token": "a\x00b"},
+            {"refresh_token": "a\x7fb"},
             {"refresh_token": "tök"},
             {"refresh_token": 12345},
         ],
-        ids=["omitted", "null", "blank", "spaces", "newline", "not-ascii", "not-text"],
+        ids=[
+            "omitted",
+            "null",
+            "blank",
+            "spaces",
+            "newline",
+            "tab",
+            "return",
+            "nul",
+            "delete",
+            "not-ascii",
+            "not-text",
+        ],
     )
     def test_a_grant_with_no_usable_refresh_token_keeps_the_stored_one(self, unusable):
         """Saved over it, the live refresh token is gone and the next refresh is
@@ -536,8 +552,13 @@ class TestTheTokenFileIsTheOnlyCopy:
 
     @pytest.mark.parametrize(
         "answer,seconds",
-        [({"expires_in": 3600}, 3600), ({"expires_in": 0.5}, 0.5), ({}, 7200)],
-        ids=["whole", "fraction", "absent-keeps-the-default"],
+        [
+            ({"expires_in": 3600}, 3600),
+            ({"expires_in": 0.5}, 0.5),
+            ({}, 7200),
+            ({"expires_in": 1e300}, 1e300),
+        ],
+        ids=["whole", "fraction", "absent-keeps-the-default", "huge-but-finite"],
     )
     def test_a_usable_lifetime_sets_the_expiry(self, answer, seconds):
         self._write(expiry=0)
@@ -546,6 +567,123 @@ class TestTheTokenFileIsTheOnlyCopy:
         with patch("urllib.request.urlopen", lambda *a, **k: self._answer(grant)):
             auth_module.refresh_token()
         assert before + seconds <= self._stored()["expiry"] <= self._now() + seconds
+
+    _TOKEN_TEXT = pytest.mark.parametrize(
+        "token",
+        ["eyJh.bG-c_i~O/+=", "eyJh.bG-c i~O/+="],
+        ids=["jwt-shaped", "inner-space"],
+    )
+
+    @_TOKEN_TEXT
+    def test_a_stored_access_token_of_valid_token_text_is_used_without_a_refresh(self, token):
+        self._write(access=token, expiry=self._now() + 3600)
+        assert auth_module.refresh_token() == token
+
+    @_TOKEN_TEXT
+    def test_a_stored_access_token_of_valid_token_text_is_sent_on_a_request(
+        self, token, monkeypatch
+    ):
+        from bosch_flow_mcp import api
+
+        monkeypatch.setattr(api, "refresh_token", auth_module.refresh_token)
+        self._write(access=token, expiry=self._now() + 3600)
+        sent = []
+
+        def urlopen(request, timeout=None):
+            sent.append(request.get_header("Authorization"))
+            return self._answer({})
+
+        with patch("urllib.request.urlopen", urlopen):
+            api.get("/v1/fictional")
+        assert sent == [f"Bearer {token}"]
+
+    @_TOKEN_TEXT
+    def test_a_stored_refresh_token_of_valid_token_text_is_sent(self, token):
+        self._write(refresh=token, expiry=0)
+        endpoint = []
+
+        def urlopen(request, timeout=None):
+            endpoint.append(parse_qs(request.data.decode())["refresh_token"][0])
+            return self._answer(self._REFRESHED)
+
+        with patch("urllib.request.urlopen", urlopen):
+            auth_module.refresh_token()
+        assert endpoint == [token]
+
+    @_TOKEN_TEXT
+    def test_an_answer_of_valid_token_text_is_saved(self, token):
+        self._write(expiry=0)
+        answer = {"access_token": token, "refresh_token": token, "expires_in": 7200}
+        with patch("urllib.request.urlopen", lambda *a, **k: self._answer(answer)):
+            assert auth_module.refresh_token() == token
+        assert (self._stored()["access_token"], self._stored()["refresh_token"]) == (token, token)
+
+    @pytest.mark.parametrize("stored", ["", 12345], ids=["blank", "not-text"])
+    def test_a_grant_saved_while_an_unusable_access_token_was_refreshed_wins(self, stored):
+        """A token that cannot be sent is refreshed whatever its expiry says, so
+        a later grant can expire before it does."""
+        self._write(access=stored, expiry=self._now() + 7200)
+        urlopen = self._urlopen_writing(
+            self._REFRESHED, access="tok-auth", refresh="ref-auth", expiry=self._now() + 3600
+        )
+        with patch("urllib.request.urlopen", urlopen):
+            assert auth_module.refresh_token() == "tok-auth"
+        assert self._stored()["refresh_token"] == "ref-auth"
+
+    _UNSENDABLE = pytest.mark.parametrize(
+        "stored",
+        [12345, "   ", "a\nb", "a\tb", "a\rb", "a\x00b", "a\x7fb", "tök", None],
+        ids=[
+            "not-text",
+            "spaces",
+            "newline",
+            "tab",
+            "return",
+            "nul",
+            "delete",
+            "not-ascii",
+            "null",
+        ],
+    )
+
+    @_UNSENDABLE
+    def test_a_stored_access_token_that_cannot_be_sent_is_refreshed(self, stored):
+        """Sent, it comes back 401, which says to re-authorise with the
+        credentials never judged."""
+        self._write(access=stored, refresh="ref-old", expiry=self._now() + 3600)
+        endpoint = self._rotating(self._NEXT_GRANT)
+        with patch("urllib.request.urlopen", endpoint["urlopen"]):
+            assert auth_module.refresh_token() == "tok-3"
+        assert endpoint["sent"] == ["ref-old"]
+
+    @_UNSENDABLE
+    def test_a_stored_refresh_token_that_cannot_be_sent_is_not_sent(self, stored):
+        self._write(refresh=stored, expiry=0)
+        with pytest.raises(auth_module.TokenRefused, match="no refresh token"):
+            auth_module.refresh_token()
+
+    @pytest.mark.parametrize(
+        "stored",
+        [float("inf"), float("nan"), 10**400],
+        ids=["infinite", "nan", "too-big-for-a-float"],
+    )
+    def test_a_stored_expiry_that_is_not_finite_counts_as_expired(self, stored):
+        """A release that did not check the lifetime can have written one, and
+        the token would never refresh."""
+        self._write(expiry=stored)
+        endpoint = self._rotating(self._NEXT_GRANT)
+        with patch("urllib.request.urlopen", endpoint["urlopen"]):
+            assert auth_module.refresh_token() == "tok-3"
+        assert endpoint["sent"] == ["ref-old"]
+
+    def test_a_copy_with_an_infinite_expiry_is_not_a_later_grant(self):
+        self._write(expiry=0)
+        urlopen = self._urlopen_writing(
+            self._REFRESHED, access="tok-copy", refresh="ref-copy", expiry=float("inf")
+        )
+        with patch("urllib.request.urlopen", urlopen):
+            assert auth_module.refresh_token() == "tok-new"
+        assert self._stored()["refresh_token"] == "ref-new"
 
     def test_a_token_file_left_with_a_blank_access_token_is_refreshed(self):
         """What a delivered refresh token is saved as. Only a file with no
@@ -1850,6 +1988,22 @@ class TestTheCodeExchangeReportsNoResponseContent:
         stored = json.loads(tokens_path.read_text())
         assert stored["expiry"] >= before + 7200
 
+    @pytest.mark.parametrize(
+        "token",
+        ["eyJh.bG-c_i~O/+=", "eyJh.bG-c i~O/+="],
+        ids=["jwt-shaped", "inner-space"],
+    )
+    def test_a_sign_in_of_valid_token_text_is_saved(self, token, monkeypatch, tmp_path):
+        tokens_path = tmp_path / "bosch_tokens.json"
+        monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", tokens_path)
+        body = json.dumps({"access_token": token, "refresh_token": token}).encode()
+        monkeypatch.setattr(auth_module.urllib.request, "urlopen", _responding(body))
+
+        auth_module._exchange_code("cid", "the-code", "the-verifier", "http://localhost:1/cb")
+
+        stored = json.loads(tokens_path.read_text())
+        assert (stored["access_token"], stored["refresh_token"]) == (token, token)
+
     def test_a_refresh_token_in_the_answer_replaces_the_stored_one(
         self, monkeypatch, capsys, tmp_path
     ):
@@ -1866,8 +2020,19 @@ class TestTheCodeExchangeReportsNoResponseContent:
 
     @pytest.mark.parametrize(
         "token",
-        ["", "   ", "a\nb", "tök", None, 12345],
-        ids=["blank", "spaces", "newline", "not-ascii", "null", "not-text"],
+        ["", "   ", "a\nb", "a\tb", "a\rb", "a\x00b", "a\x7fb", "tök", None, 12345],
+        ids=[
+            "blank",
+            "spaces",
+            "newline",
+            "tab",
+            "return",
+            "nul",
+            "delete",
+            "not-ascii",
+            "null",
+            "not-text",
+        ],
     )
     def test_a_token_that_cannot_be_sent_fails_and_saves_nothing(
         self, token, monkeypatch, capsys, caplog, tmp_path

@@ -270,30 +270,32 @@ def _filled(token) -> bool:
     )
 
 
+def _finite(value) -> float:
+    """`value` if it is a finite number, else 0."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return 0
+    try:
+        return value if math.isfinite(value) else 0
+    except OverflowError:
+        return 0
+
+
 def _expiry_after(lifetime) -> float:
     """When a token lasting `lifetime` seconds expires, or 0 if that is not a
     finite positive number, which counts as already expired."""
-    if not isinstance(lifetime, (int, float)) or isinstance(lifetime, bool) or lifetime <= 0:
-        return 0
-    try:
-        expiry = datetime.now(timezone.utc).timestamp() + lifetime
-    except OverflowError:
-        return 0
-    return expiry if math.isfinite(expiry) else 0
+    seconds = _finite(lifetime)
+    return datetime.now(timezone.utc).timestamp() + seconds if seconds > 0 else 0
 
 
 def _expiry(tokens: dict) -> float:
     """The stored expiry, or 0 when it is unusable."""
-    value = tokens.get("expiry", 0)
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
-        return 0
-    return value
+    return _finite(tokens.get("expiry", 0))
 
 
 def _usable(tokens: dict) -> bool:
     """Whether the stored access token can be sent, with the 5-minute buffer."""
     now = datetime.now(timezone.utc).timestamp()
-    return bool(tokens.get("access_token")) and now < _expiry(tokens) - 300
+    return _filled(tokens.get("access_token")) and now < _expiry(tokens) - 300
 
 
 def _reread_tokens() -> dict | None:
@@ -310,7 +312,8 @@ def _replaced_by_a_later_grant(on_disk: dict, tokens: dict) -> bool:
     Usable is what decides; later guards a clock that steps back during the
     request, which would otherwise make the untouched file look new.
     """
-    return _expiry(on_disk) > _expiry(tokens) and _usable(on_disk)
+    baseline = _expiry(tokens) if _filled(tokens.get("access_token")) else 0
+    return _expiry(on_disk) > baseline and _usable(on_disk)
 
 
 def _current_tokens() -> dict:
@@ -372,7 +375,7 @@ def _refresh_token() -> str:
         if _usable(tokens):
             return tokens["access_token"]
 
-        if not tokens.get("refresh_token"):
+        if not _filled(tokens.get("refresh_token")):
             raise TokenRefused("Token expired and no refresh token. Run: bosch-flow-mcp auth")
 
         # Use whichever client_id was used to obtain the token
