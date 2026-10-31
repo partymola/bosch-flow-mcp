@@ -1,5 +1,6 @@
 """Sync tool: fetch data from Bosch APIs and store in local SQLite cache."""
 
+import contextlib
 import logging
 from datetime import datetime, timezone
 
@@ -351,23 +352,34 @@ _SYNC_DISPATCH = {
 _ALL_TYPES = list(_SYNC_DISPATCH)
 
 
+def _write_row(conn, dtype: str, status: str, records: int = 0, note: str = "") -> None:
+    """Write the row, and never let writing it end the run.
+
+    A locked database, as with a CLI sync alongside an MCP session, raises here.
+    A type that finished has already committed its data, so its result is left
+    as it stands. After a failure part-way through a type, this row's commit is
+    what persists an earlier bike's data, and the rollback discards it if the
+    row cannot be written. A refused commit leaves the write lock held, which
+    the rollback releases.
+    """
+    try:
+        db.log_sync(conn, dtype, status, records, note)
+    except Exception as e:
+        logger.error("Could not record the sync of %s (%s)", dtype, type(e).__name__)
+        with contextlib.suppress(Exception):
+            conn.rollback()
+
+
 def _record_failure(
     conn, dtype: str, status: str, code: str, note: str, row_status: str = "error"
 ) -> dict:
-    """Write the row, and never let writing it end the run.
-
-    A locked database - a CLI sync alongside an MCP session - raises here,
-    and that raise would escape the very catch-all that exists to keep the
-    remaining types going.
+    """Write the failure's row and build its result.
 
     row_status is what lands in sync_log and defaults to "error", which is
     not in _SETTLED_SYNC_STATUSES, so auto-sync retries on the next read. The
     caller's own status can be finer-grained than that.
     """
-    try:
-        db.log_sync(conn, dtype, row_status, 0, note)
-    except Exception:
-        logger.error("Could not record a failed sync of %s", dtype)
+    _write_row(conn, dtype, row_status, note=note)
     return {"status": status, "records": 0, "code": code, "message": note}
 
 
@@ -398,7 +410,7 @@ def run_sync(data_types: list[str]) -> dict:
 
             # Data-Act-only type on a non-euda client: skip the doomed call, say why.
             if dtype in DATA_ACT_ONLY and not is_euda:
-                db.log_sync(conn, dtype, "unavailable", 0, REQUIRES_EUDA_MSG)
+                _write_row(conn, dtype, "unavailable", note=REQUIRES_EUDA_MSG)
                 results[dtype] = {
                     "status": "unavailable",
                     "records": 0,
@@ -407,8 +419,14 @@ def run_sync(data_types: list[str]) -> dict:
                 }
                 continue
 
+            # A euda token with no bikes is the non-EU trap: surface it for bikes AND
+            # everything derived from them (batteries/components), so calling a derived
+            # tool first still explains the empty result instead of a bare ok/0.
             try:
                 count = sync_fn(conn, is_euda)
+                euda_empty = (
+                    count == 0 and is_euda and dtype in _BIKE_DERIVED and not db.query_bikes(conn)
+                )
             except api.BoschAuthError:
                 # A dead token is the failure that will not clear itself, so
                 # it is the one worth finding later.
@@ -440,11 +458,8 @@ def run_sync(data_types: list[str]) -> dict:
                 )
                 continue
 
-            # A euda token with no bikes is the non-EU trap: surface it for bikes AND
-            # everything derived from them (batteries/components), so calling a derived
-            # tool first still explains the empty result instead of a bare ok/0.
-            if count == 0 and is_euda and dtype in _BIKE_DERIVED and not db.query_bikes(conn):
-                db.log_sync(conn, dtype, "empty", 0, EUDA_EMPTY_MSG)
+            if euda_empty:
+                _write_row(conn, dtype, "empty", note=EUDA_EMPTY_MSG)
                 results[dtype] = {
                     "status": "empty",
                     "records": 0,
@@ -453,7 +468,7 @@ def run_sync(data_types: list[str]) -> dict:
                 }
                 continue
 
-            db.log_sync(conn, dtype, "ok", count)
+            _write_row(conn, dtype, "ok", count)
             results[dtype] = {"status": "ok", "records": count}
     finally:
         conn.close()

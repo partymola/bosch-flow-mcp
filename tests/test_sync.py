@@ -1,7 +1,11 @@
 """Tests for sync orchestration."""
 
 import json
+import logging
+import sqlite3
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from bosch_flow_mcp.tools import sync_tools
 from bosch_flow_mcp.tools.sync_tools import auto_sync_if_stale, run_sync
@@ -347,10 +351,11 @@ class TestNoRequestPathReachesTheSyncLogOrAModel:
         assert rows and rows[0][0] == "error"
 
     def test_a_database_that_cannot_take_the_row_does_not_end_the_run(self, tmp_path, monkeypatch):
-        """Writing the failure row is itself a database write.
+        """Writing a sync_log row is itself a database write.
 
         A locked database when recording a failure, as with a CLI sync alongside
-        an MCP session, must not stop the remaining types.
+        an MCP session, must not stop the remaining types. The other outcomes
+        are in TestASyncLogRowThatCannotBeWritten.
         """
         from bosch_flow_mcp import api
         from bosch_flow_mcp.tools import sync_tools as st
@@ -379,6 +384,255 @@ class TestNoRequestPathReachesTheSyncLogOrAModel:
         assert results["bikes"]["status"] == "error"
         assert rows and rows[0][0] == "error"
         assert "/etc/secret/path" not in json.dumps([results, rows])
+
+
+class TestASyncLogRowThatCannotBeWritten:
+    """A type that finishes has committed its data before its row is written.
+
+    So a locked database at that point loses that row and not the data: the
+    result still says what happened, and the remaining types still run. The log
+    shows the type's previous outcome until a later row lands, and auto-sync
+    syncs the type again on the next read unless a settled row from earlier
+    today is already there.
+    """
+
+    def _sync(self, types, tmp_path, monkeypatch, is_euda=False, get=_mock_api_get):
+        from bosch_flow_mcp.tools import sync_tools as st
+
+        monkeypatch.setenv("BOSCH_FLOW_MCP_DB_PATH", str(tmp_path / "test.db"))
+        with (
+            patch.object(st.api, "get", side_effect=get),
+            patch.object(st.auth, "token_is_euda", return_value=is_euda),
+            patch.object(
+                st.db, "log_sync", side_effect=sqlite3.OperationalError("database is locked")
+            ),
+        ):
+            return run_sync(types)
+
+    def test_a_successful_sync_keeps_its_result_and_the_next_type_runs(self, tmp_path, monkeypatch):
+        import bosch_flow_mcp.db as db_module
+
+        results = self._sync(["bikes", "batteries"], tmp_path, monkeypatch)
+
+        assert results["bikes"] == {"status": "ok", "records": 1}
+        assert results["batteries"] == {"status": "ok", "records": 1}
+        conn = db_module.get_db(tmp_path / "test.db")
+        stored = [bike["bike_id"] for bike in db_module.query_bikes(conn)]
+        conn.close()
+        assert stored == [FAKE_BIKE_ID]
+
+    @pytest.mark.parametrize(
+        "dtype,table,seed",
+        [
+            ("bikes", "bikes", None),
+            ("batteries", "batteries", "bike"),
+            ("components", "components", None),
+            ("service", "service_records", "bike"),
+            ("software_updates", "software_updates", "bike"),
+            ("capacity", "capacity_tests", "battery"),
+        ],
+    )
+    def test_every_sync_function_commits_its_own_data(
+        self, dtype, table, seed, tmp_path, monkeypatch
+    ):
+        """run_sync closes its connection, which discards anything uncommitted,
+        and with no row written nothing else commits."""
+        import bosch_flow_mcp.db as db_module
+
+        conn = db_module.get_db(tmp_path / "test.db")
+        if seed == "bike":
+            db_module.save_bike(conn, FAKE_BIKE_ID, {"name": "Seeded"})
+        if seed == "battery":
+            battery = {"partNumber": "TESTPART003", "serialNumber": "BATTSN001"}
+            db_module.save_component(conn, FAKE_BIKE_ID, "battery", battery)
+        conn.commit()
+        conn.close()
+
+        def get(path, base=None, retries=3):
+            if "service-records" in path:
+                return [{"id": "SVC1", "date": "2026-03-15"}]
+            if "installation-reports" in path:
+                return [{"installedAt": "2026-03-20T12:00:00Z", "component": "driveUnit"}]
+            if "capacity-testers" in path:
+                return [{"testDate": "2026-03-10"}]
+            return _mock_api_get(path, base, retries)
+
+        results = self._sync([dtype], tmp_path, monkeypatch, is_euda=True, get=get)
+
+        assert results[dtype] == {"status": "ok", "records": 1}
+        conn = db_module.get_db(tmp_path / "test.db")
+        held = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        conn.close()
+        assert held == 1
+
+    @pytest.mark.parametrize(
+        "row_written,held", [(True, 1), (False, 0)], ids=["row-written", "row-refused"]
+    )
+    def test_a_failure_part_way_through_a_type_keeps_what_it_saved_only_with_its_row(
+        self, row_written, held, tmp_path, monkeypatch
+    ):
+        """The sync functions commit at their end, so the failure row's commit
+        is what persists an earlier bike's snapshot."""
+        import bosch_flow_mcp.db as db_module
+        from bosch_flow_mcp import api
+        from bosch_flow_mcp.tools import sync_tools as st
+        from tests.conftest import FAKE_BIKE_ID_2
+
+        conn = db_module.get_db(tmp_path / "test.db")
+        for bike_id in (FAKE_BIKE_ID, FAKE_BIKE_ID_2):
+            db_module.save_bike(conn, bike_id, {"name": "Seeded"})
+        conn.commit()
+        conn.close()
+        monkeypatch.setenv("BOSCH_FLOW_MCP_DB_PATH", str(tmp_path / "test.db"))
+        if not row_written:
+            monkeypatch.setattr(
+                st.db, "log_sync", MagicMock(side_effect=sqlite3.OperationalError("locked"))
+            )
+
+        def get(path, base=None, retries=3):
+            if FAKE_BIKE_ID_2 in path:
+                raise api.BoschAPIError("boom")
+            return FAKE_BIKE_DETAIL_RESPONSE
+
+        with (
+            patch.object(st.api, "get", side_effect=get),
+            patch.object(st.auth, "token_is_euda", return_value=False),
+        ):
+            results = run_sync(["batteries"])
+
+        assert results["batteries"]["status"] == "error"
+        conn = db_module.get_db(tmp_path / "test.db")
+        count = conn.execute("SELECT COUNT(*) FROM batteries").fetchone()[0]
+        conn.close()
+        assert count == held
+
+    def test_a_refused_commit_releases_the_lock(self, tmp_path, caplog):
+        """A reader holding the file refuses the commit, and the insert before
+        it has taken the write lock. Left open, that lock stops every other
+        writer, and the row goes out with whatever this connection commits next."""
+        import bosch_flow_mcp.db as db_module
+        from bosch_flow_mcp.tools import sync_tools as st
+
+        path = tmp_path / "test.db"
+        conn = db_module.get_db(path)
+        conn.execute("PRAGMA busy_timeout = 0")
+        reader = sqlite3.connect(path)
+        reader.execute("BEGIN")
+        reader.execute("SELECT * FROM sync_log").fetchall()
+
+        st._write_row(conn, "bikes", "ok", 1)
+
+        reader.rollback()
+        reader.close()
+        assert [record.getMessage() for record in caplog.records] == [
+            "Could not record the sync of bikes (OperationalError)"
+        ]
+        other = sqlite3.connect(path, timeout=0)
+        other.execute("BEGIN IMMEDIATE")
+        other.rollback()
+        other.close()
+        st._write_row(conn, "batteries", "ok", 2)
+        rows = [row["data_type"] for row in conn.execute("SELECT data_type FROM sync_log")]
+        conn.close()
+        assert rows == ["batteries"]
+
+    def test_a_rollback_that_fails_does_not_end_the_run(self):
+        from bosch_flow_mcp.tools import sync_tools as st
+
+        conn = MagicMock()
+        conn.rollback.side_effect = sqlite3.OperationalError("disk I/O error")
+        with patch.object(
+            st.db, "log_sync", side_effect=sqlite3.OperationalError("database is locked")
+        ):
+            st._write_row(conn, "bikes", "ok", 1)
+        conn.rollback.assert_called_once_with()
+
+    def test_an_unavailable_type_keeps_its_result_and_the_next_type_runs(
+        self, tmp_path, monkeypatch
+    ):
+        results = self._sync(["service", "bikes"], tmp_path, monkeypatch)
+
+        assert results["service"] == {
+            "status": "unavailable",
+            "records": 0,
+            "code": "requires_euda",
+            "message": sync_tools.REQUIRES_EUDA_MSG,
+        }
+        assert results["bikes"] == {"status": "ok", "records": 1}
+
+    def test_a_euda_empty_result_keeps_its_result_and_the_next_type_runs(
+        self, tmp_path, monkeypatch
+    ):
+        results = self._sync(
+            ["bikes", "service"], tmp_path, monkeypatch, is_euda=True, get=lambda *a, **k: {}
+        )
+
+        assert results["bikes"] == {
+            "status": "empty",
+            "records": 0,
+            "code": "euda_empty",
+            "message": sync_tools.EUDA_EMPTY_MSG,
+        }
+        assert results["service"] == {"status": "ok", "records": 0}
+
+    def test_the_lost_row_is_logged_by_type_and_not_by_the_exceptions_text(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        with caplog.at_level(logging.ERROR, logger="bosch_flow_mcp.tools.sync_tools"):
+            self._sync(["bikes", "service"], tmp_path, monkeypatch)
+
+        assert [record.getMessage() for record in caplog.records] == [
+            "Could not record the sync of bikes (OperationalError)",
+            "Could not record the sync of service (OperationalError)",
+        ]
+        assert all(record.exc_info is None for record in caplog.records)
+
+    def test_a_locked_read_of_the_bikes_table_does_not_end_the_run(self, tmp_path, monkeypatch):
+        """The euda-empty check reads the database after the sync function returns."""
+        from bosch_flow_mcp.tools import sync_tools as st
+
+        monkeypatch.setenv("BOSCH_FLOW_MCP_DB_PATH", str(tmp_path / "test.db"))
+        with (
+            patch.object(st.api, "get", return_value={}),
+            patch.object(st.auth, "token_is_euda", return_value=True),
+            patch.object(
+                st.db,
+                "query_bikes",
+                side_effect=[sqlite3.OperationalError("database is locked"), []],
+            ),
+        ):
+            results = run_sync(["bikes", "service"])
+
+        assert results["bikes"]["status"] == "error"
+        assert "OperationalError" in results["bikes"]["message"]
+        assert results["service"] == {"status": "ok", "records": 0}
+
+    def test_each_outcome_still_writes_its_row(self, tmp_path, monkeypatch):
+        """The guard must not lose the rows auto-sync and empty_data_note read."""
+        import bosch_flow_mcp.db as db_module
+        from bosch_flow_mcp.tools import sync_tools as st
+
+        def rows(types, name, is_euda, get):
+            monkeypatch.setenv("BOSCH_FLOW_MCP_DB_PATH", str(tmp_path / name))
+            with (
+                patch.object(st.api, "get", side_effect=get),
+                patch.object(st.auth, "token_is_euda", return_value=is_euda),
+            ):
+                run_sync(types)
+            conn = db_module.get_db(tmp_path / name)
+            found = conn.execute(
+                "SELECT data_type, status, records_added, notes FROM sync_log ORDER BY id"
+            ).fetchall()
+            conn.close()
+            return [tuple(row) for row in found]
+
+        assert rows(["bikes", "service"], "app.db", False, _mock_api_get) == [
+            ("bikes", "ok", 1, ""),
+            ("service", "unavailable", 0, sync_tools.REQUIRES_EUDA_MSG),
+        ]
+        assert rows(["bikes"], "euda.db", True, lambda *a, **k: {}) == [
+            ("bikes", "empty", 0, sync_tools.EUDA_EMPTY_MSG),
+        ]
 
 
 class TestTheDispatchOrderSatisfiesItsDependencies:

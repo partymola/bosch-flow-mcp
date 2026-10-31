@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A refused refresh is no longer reported as needing `bosch-flow-mcp auth` when the token file holds a different refresh token by then. The server uses the new token if it is still valid. Otherwise it reports a network error, and the next request refreshes from the file.
 - A refreshed token whose save fails is still kept by the running server, and the save is now retried on each request.
 - The token file is replaced in one step rather than emptied and rewritten. Another server reading it while a token was being saved could find it empty or half-written. A save that failed part-way left it that way. A reader now sees the old file or the new one, and a failed save leaves the old one in place. New files are still created owner-only on POSIX, and a symlinked file is saved where the link points. Saving now needs write access to the config directory. A token file mounted into a container on its own, rather than in its directory, cannot be renamed over, so mount the directory.
+- A locked database no longer stops a sync part-way. If the sync log could not be written after a type finished, the remaining types never ran. The type now reports its result as usual and the other types run. The log shows that type's previous outcome until a later row lands. The next read syncs it again unless it already synced today.
 
 ## [0.7.0] - 2026-09-05
 
