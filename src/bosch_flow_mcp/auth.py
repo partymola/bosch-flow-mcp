@@ -62,8 +62,8 @@ class TokenRefused(RuntimeError):
 class RefreshNetworkError(RuntimeError):
     """The refresh request never got a verdict.
 
-    An unreachable server, a rate limit or an unreadable response says nothing
-    about whether the credentials are still good.
+    An unreachable server, a rate limit, an unreadable response or a 200 with
+    no usable token says nothing about whether the credentials are still good.
     """
 
 
@@ -349,8 +349,7 @@ def _refresh_token() -> str:
         if not tokens.get("access_token"):
             # A policy choice, made before the expiry and before any refresh: a
             # file with no access token is refused even if it holds a refresh
-            # token that could be tried. A wire response with no token is
-            # refused the same way. Waiting does not change the file.
+            # token that could be tried. Waiting does not change the file.
             raise TokenRefused("Token file has no access token. Run: bosch-flow-mcp auth")
 
         if _usable(tokens):
@@ -410,12 +409,15 @@ def _refresh_token() -> str:
         except ValueError as e:
             raise RefreshNetworkError("Bosch returned an unreadable response.") from e
 
-        if not isinstance(new_tokens, dict) or not new_tokens.get("access_token"):
-            raise TokenRefused("Token refresh failed. Run: bosch-flow-mcp auth")
+        if not isinstance(new_tokens, dict) or not _filled(new_tokens.get("access_token")):
+            # A 200 is no verdict: the token endpoint refuses with 400 or 401.
+            logger.warning("Token refresh answered 200 with no usable token")
+            raise RefreshNetworkError("Bosch returned no usable token.")
 
+        new_refresh = new_tokens.get("refresh_token")
         refreshed = {
             "access_token": new_tokens["access_token"],
-            "refresh_token": new_tokens.get("refresh_token", tokens["refresh_token"]),
+            "refresh_token": new_refresh if _filled(new_refresh) else tokens["refresh_token"],
             "token_type": new_tokens.get("token_type", "Bearer"),
             "expiry": datetime.now(timezone.utc).timestamp() + new_tokens.get("expires_in", 7200),
             "client_id": client_id,

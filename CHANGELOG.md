@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `bosch-flow-mcp auth` treats an unusable refresh token in the response as missing. It saved that token, and the next refresh was refused. It now saves no refresh token and says to run it again when the access token expires. An earlier sign-in's refresh token is not reused, since it may belong to another account.
 - A date tool refuses month `00` as its end date. `2026-00` read as 31 December 2025 and answered with real data for the wrong range.
 - A day count too large to compute, such as `99999999d`, now gets the accepted formats back rather than an unexpected error. So does `0000-12` as an end date. `9999-12` is now accepted as an end date.
+- A token refresh answered 200 with no usable access token is now a network error. It told you to run `bosch-flow-mcp auth`, though such a response says nothing about your credentials. A non-text token was saved and sent. The next request asks again.
+- A refreshed grant holding a null, blank or otherwise unusable refresh token keeps the stored one. That token was saved over the live one, so the next refresh was refused.
 
 ## [0.7.0] - 2026-09-05
 

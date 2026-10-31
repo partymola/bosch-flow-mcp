@@ -391,6 +391,58 @@ class TestTheTokenFileIsTheOnlyCopy:
         assert len(posts) == 2
         assert auth_module._unsaved is None
 
+    @pytest.mark.parametrize(
+        "unusable",
+        [{}, {"refresh_token": None}, {"refresh_token": ""}, {"refresh_token": 12345}],
+        ids=["omitted", "null", "blank", "not-text"],
+    )
+    def test_a_grant_with_no_usable_refresh_token_keeps_the_stored_one(self, unusable):
+        """Saved over it, the live refresh token is gone and the next refresh is
+        refused, with the credentials never judged."""
+        self._write(expiry=0)
+        answer = {"access_token": "tok-new", "expires_in": 7200, **unusable}
+        with patch("urllib.request.urlopen", lambda *a, **k: self._answer(answer)):
+            assert auth_module.refresh_token() == "tok-new"
+        assert self._stored()["refresh_token"] == "ref-old"
+
+    def test_a_held_grant_refreshed_with_no_new_refresh_token_keeps_its_own(self):
+        """The file's is the one the held grant replaced, and may already be spent."""
+        self._write(expiry=0)
+        answers = [
+            dict(self._REFRESHED, expires_in=0),
+            {"access_token": "tok-long", "expires_in": 7200},
+        ]
+        with (
+            self._fail_saves(2),
+            patch("urllib.request.urlopen", lambda *a, **k: self._answer(answers.pop(0))),
+        ):
+            auth_module.refresh_token()
+            assert auth_module.refresh_token() == "tok-long"
+        assert self._stored()["refresh_token"] == "ref-new"
+
+    def test_a_200_with_no_usable_token_leaves_a_held_grant_held(self):
+        """It judges nothing, so the held grant's refresh token may still be
+        live, and the file's may already be spent."""
+        self._write(expiry=0)
+        sent = []
+        answers = [
+            dict(self._REFRESHED, expires_in=0),
+            {"token_type": "Bearer"},
+            dict(self._REFRESHED, access_token="tok-long", refresh_token="ref-long"),
+        ]
+
+        def urlopen(request, timeout=None):
+            sent.append(parse_qs(request.data.decode())["refresh_token"][0])
+            return self._answer(answers.pop(0))
+
+        with self._fail_saves(3), patch("urllib.request.urlopen", urlopen):
+            auth_module.refresh_token()
+            with pytest.raises(auth_module.RefreshNetworkError):
+                auth_module.refresh_token()
+            assert auth_module.refresh_token() == "tok-long"
+        assert sent == ["ref-old", "ref-new", "ref-new"]
+        assert self._stored()["refresh_token"] == "ref-long"
+
     def test_a_re_read_file_with_a_blank_access_token_is_saved_over(self):
         self._write(expiry=0)
         urlopen = self._urlopen_writing(
@@ -730,11 +782,44 @@ class TestRefusalsAndNetworkConditions:
                 self._responding(b"<html>captive portal</html>"), tmp_path, monkeypatch
             )
 
-    def test_a_response_without_a_token_is_a_refusal(self, tmp_path, monkeypatch):
-        with pytest.raises(auth_module.TokenRefused):
-            self._refresh_with_urlopen(
-                self._responding(b'{"token_type": "Bearer"}'), tmp_path, monkeypatch
-            )
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            b'{"token_type": "Bearer"}',
+            b'{"access_token": ""}',
+            b'{"access_token": null}',
+            b'{"access_token": 12345}',
+            b'{"refresh_token": "r-new"}',
+            b'["not", "an", "object"]',
+            b"42",
+        ],
+        ids=["no-key", "blank", "null", "not-text", "refresh-token-only", "list", "scalar"],
+    )
+    def test_a_200_with_no_usable_token_is_not_a_refusal(self, payload, tmp_path, monkeypatch):
+        """A 200 judges nothing, and re-authorising in answer to it spends a
+        refresh token that may still work. Saved, an unusable token comes back
+        401, which says the same thing with the credentials still unjudged."""
+        with pytest.raises(
+            auth_module.RefreshNetworkError, match="^Bosch returned no usable token"
+        ):
+            self._refresh_with_urlopen(self._responding(payload), tmp_path, monkeypatch)
+        stored = json.loads((tmp_path / "bosch_tokens.json").read_text())
+        assert (stored["access_token"], stored["refresh_token"]) == ("a", "r")
+
+    def test_a_200_with_no_usable_token_is_logged_once_in_fixed_text(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Nothing else records why a refresh keeps failing, and the body can
+        carry anything, so none of it is logged."""
+        payload = b'{"error_description": "account ACC-SECRET-42 is not provisioned"}'
+        with (
+            caplog.at_level(logging.DEBUG, logger="bosch_flow_mcp.auth"),
+            pytest.raises(auth_module.RefreshNetworkError),
+        ):
+            self._refresh_with_urlopen(self._responding(payload), tmp_path, monkeypatch)
+        assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
+            (logging.WARNING, "Token refresh answered 200 with no usable token")
+        ]
 
     def test_an_unreadable_token_file_is_a_refusal(self, tmp_path, monkeypatch):
         tokens = tmp_path / "bosch_tokens.json"
@@ -802,17 +887,6 @@ class TestTheRoutingHelpersNeverRaise:
 class TestRefusalsAreNotNetworkConditions:
     """Some of the sites that find the credentials unusable, pinned to the right class."""
 
-    def _refresh_with_response(self, payload, tmp_path, monkeypatch):
-        path = tmp_path / "bosch_tokens.json"
-        path.write_text(json.dumps({"access_token": "a", "refresh_token": "r", "expiry": 0}))
-        monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", path)
-        resp = MagicMock()
-        resp.read.return_value = payload
-        resp.__enter__ = lambda s: s
-        resp.__exit__ = lambda *a: None
-        monkeypatch.setattr(auth_module.urllib.request, "urlopen", MagicMock(return_value=resp))
-        return auth_module.refresh_token()
-
     def test_an_unauthorised_response_is_a_refusal(self, tmp_path, monkeypatch):
         import io
         import urllib.error
@@ -827,14 +901,6 @@ class TestRefusalsAreNotNetworkConditions:
         )
         with pytest.raises(auth_module.TokenRefused):
             auth_module.refresh_token()
-
-    def test_a_response_of_the_wrong_shape_is_a_refusal(self, tmp_path, monkeypatch):
-        with pytest.raises(auth_module.TokenRefused):
-            self._refresh_with_response(b'["not", "an", "object"]', tmp_path, monkeypatch)
-
-    def test_a_response_without_a_token_is_a_refusal(self, tmp_path, monkeypatch):
-        with pytest.raises(auth_module.TokenRefused):
-            self._refresh_with_response(b'{"token_type": "Bearer"}', tmp_path, monkeypatch)
 
     def test_a_token_file_of_the_wrong_shape_is_a_refusal(self, tmp_path, monkeypatch):
         path = tmp_path / "bosch_tokens.json"
