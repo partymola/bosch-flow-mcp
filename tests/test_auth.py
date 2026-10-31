@@ -393,8 +393,16 @@ class TestTheTokenFileIsTheOnlyCopy:
 
     @pytest.mark.parametrize(
         "unusable",
-        [{}, {"refresh_token": None}, {"refresh_token": ""}, {"refresh_token": 12345}],
-        ids=["omitted", "null", "blank", "not-text"],
+        [
+            {},
+            {"refresh_token": None},
+            {"refresh_token": ""},
+            {"refresh_token": "   "},
+            {"refresh_token": "a\nb"},
+            {"refresh_token": "tök"},
+            {"refresh_token": 12345},
+        ],
+        ids=["omitted", "null", "blank", "spaces", "newline", "not-ascii", "not-text"],
     )
     def test_a_grant_with_no_usable_refresh_token_keeps_the_stored_one(self, unusable):
         """Saved over it, the live refresh token is gone and the next refresh is
@@ -404,6 +412,114 @@ class TestTheTokenFileIsTheOnlyCopy:
         with patch("urllib.request.urlopen", lambda *a, **k: self._answer(answer)):
             assert auth_module.refresh_token() == "tok-new"
         assert self._stored()["refresh_token"] == "ref-old"
+
+    def _rotating(self, *answers):
+        """A token endpoint that enforces rotation: a usable refresh token in an
+        answer spends the one sent, and a spent one is refused with 400."""
+        endpoint = {"live": "ref-old", "sent": []}
+
+        def urlopen(request, timeout=None):
+            sent = parse_qs(request.data.decode())["refresh_token"][0]
+            endpoint["sent"].append(sent)
+            if sent != endpoint["live"]:
+                raise self._refusal(400)
+            answer = answers[len(endpoint["sent"]) - 1]
+            if isinstance(answer.get("refresh_token"), str) and answer["refresh_token"].strip():
+                endpoint["live"] = answer["refresh_token"]
+            return self._answer(answer)
+
+        endpoint["urlopen"] = urlopen
+        return endpoint
+
+    _NEXT_GRANT = {"access_token": "tok-3", "refresh_token": "ref-3", "expires_in": 7200}
+
+    @pytest.mark.parametrize(
+        "access",
+        [
+            {},
+            {"access_token": ""},
+            {"access_token": "   "},
+            {"access_token": None},
+            {"access_token": 1},
+        ],
+        ids=["omitted", "blank", "spaces", "null", "not-text"],
+    )
+    def test_a_refresh_token_delivered_with_no_usable_access_token_is_kept(self, access):
+        """Bosch has spent the token sent, so dropping this one leaves the next
+        call to send a dead token and be told to re-authorise."""
+        self._write(expiry=0)
+        endpoint = self._rotating({**access, "refresh_token": "ref-2"}, self._NEXT_GRANT)
+        with patch("urllib.request.urlopen", endpoint["urlopen"]):
+            with pytest.raises(auth_module.RefreshNetworkError, match="no usable token"):
+                auth_module.refresh_token()
+            stored = self._stored()
+            assert (stored["access_token"], stored["refresh_token"], stored["expiry"]) == (
+                "",
+                "ref-2",
+                0,
+            )
+            assert stored["client_id"] == CLIENT_ID
+            assert auth_module.refresh_token() == "tok-3"
+        assert endpoint["sent"] == ["ref-old", "ref-2"]
+        assert self._stored()["refresh_token"] == "ref-3"
+
+    def test_a_refresh_token_delivered_with_no_access_token_is_held_if_the_save_fails(self):
+        self._write(expiry=0)
+        endpoint = self._rotating({"refresh_token": "ref-2"}, self._NEXT_GRANT)
+        with self._fail_saves(2), patch("urllib.request.urlopen", endpoint["urlopen"]):
+            with pytest.raises(auth_module.RefreshNetworkError):
+                auth_module.refresh_token()
+            assert auth_module._unsaved is not None
+            assert auth_module.refresh_token() == "tok-3"
+        assert endpoint["sent"] == ["ref-old", "ref-2"]
+        assert self._stored()["refresh_token"] == "ref-3"
+
+    def test_a_refresh_token_delivered_to_a_held_grant_replaces_it(self):
+        """The held grant's refresh token has just been spent."""
+        self._write(expiry=0)
+        endpoint = self._rotating(
+            dict(self._REFRESHED, expires_in=0), {"refresh_token": "ref-2"}, self._NEXT_GRANT
+        )
+        with self._fail_saves(3), patch("urllib.request.urlopen", endpoint["urlopen"]):
+            auth_module.refresh_token()
+            with pytest.raises(auth_module.RefreshNetworkError):
+                auth_module.refresh_token()
+            assert auth_module.refresh_token() == "tok-3"
+        assert endpoint["sent"] == ["ref-old", "ref-new", "ref-2"]
+
+    def test_a_later_grant_wins_over_a_refresh_token_delivered_alone(self):
+        self._write(expiry=0)
+        urlopen = self._urlopen_writing(
+            {"refresh_token": "ref-2"},
+            access="tok-auth",
+            refresh="ref-auth",
+            expiry=self._now() + 3600,
+        )
+        with patch("urllib.request.urlopen", urlopen):
+            assert auth_module.refresh_token() == "tok-auth"
+        assert self._stored()["refresh_token"] == "ref-auth"
+
+    def test_a_token_file_left_with_a_blank_access_token_is_refreshed(self):
+        """What a delivered refresh token is saved as. Only a file with no
+        access_token key at all is refused."""
+        self._write(access="", refresh="ref-old", expiry=self._now() + 3600)
+        endpoint = self._rotating(self._NEXT_GRANT)
+        with patch("urllib.request.urlopen", endpoint["urlopen"]):
+            assert auth_module.refresh_token() == "tok-3"
+        assert endpoint["sent"] == ["ref-old"]
+
+    def test_a_refresh_token_delivered_with_no_access_token_logs_one_warning(self, caplog):
+        self._write(expiry=0)
+        endpoint = self._rotating({"refresh_token": "ref-2-SECRET"})
+        with (
+            patch("urllib.request.urlopen", endpoint["urlopen"]),
+            caplog.at_level(logging.DEBUG, logger="bosch_flow_mcp.auth"),
+            pytest.raises(auth_module.RefreshNetworkError),
+        ):
+            auth_module.refresh_token()
+        assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
+            (logging.WARNING, "Token refresh answered 200 with no usable token")
+        ]
 
     def test_a_held_grant_refreshed_with_no_new_refresh_token_keeps_its_own(self):
         """The file's is the one the held grant replaced, and may already be spent."""
@@ -787,13 +903,35 @@ class TestRefusalsAndNetworkConditions:
         [
             b'{"token_type": "Bearer"}',
             b'{"access_token": ""}',
+            b'{"access_token": "   "}',
+            b'{"access_token": "a\\nb"}',
+            b'{"access_token": "t\\u00f6k"}',
             b'{"access_token": null}',
             b'{"access_token": 12345}',
-            b'{"refresh_token": "r-new"}',
+            b'{"access_token": "", "refresh_token": ""}',
+            b'{"refresh_token": "   "}',
+            b'{"refresh_token": "a\\nb"}',
+            b'{"refresh_token": "t\\u00f6k"}',
+            b'{"refresh_token": 12345}',
             b'["not", "an", "object"]',
             b"42",
         ],
-        ids=["no-key", "blank", "null", "not-text", "refresh-token-only", "list", "scalar"],
+        ids=[
+            "no-key",
+            "blank",
+            "spaces",
+            "newline",
+            "not-ascii",
+            "null",
+            "not-text",
+            "both-blank",
+            "refresh-spaces",
+            "refresh-newline",
+            "refresh-not-ascii",
+            "refresh-not-text",
+            "list",
+            "scalar",
+        ],
     )
     def test_a_200_with_no_usable_token_is_not_a_refusal(self, payload, tmp_path, monkeypatch):
         """A 200 judges nothing, and re-authorising in answer to it spends a
@@ -972,14 +1110,13 @@ class TestAStoredTokenWithoutOneIsARefusal:
     def test_a_token_file_with_no_access_token(self, tmp_path, monkeypatch):
         """A file with no access token is refused, even with a refresh token in it.
 
-        _refresh_token and _exchange_code save only a response carrying a token,
-        so this file comes from a writer outside this repo, or from a release up
-        to 0.7.0, which could save a blank one from an exchange. A half-written
-        file fails to parse and is refused before this check. The refusal is
-        strict: the check in _refresh_token runs before any refresh, so a live
-        refresh token in the file goes unused, and `_no_network` fails this test
-        if a refresh is attempted. Letting such a file refresh means removing
-        that check.
+        Nothing in this repo writes a file without the key, so this one comes
+        from a writer outside it. A blank value is a different file, which is
+        refreshed. A half-written file fails to parse and is refused before this
+        check. The refusal is strict: the check in _refresh_token runs before
+        any refresh, so a live refresh token in the file goes unused, and
+        `_no_network` fails this test if a refresh is attempted. Letting such a
+        file refresh means removing that check.
         """
         path = tmp_path / "bosch_tokens.json"
         path.write_text(

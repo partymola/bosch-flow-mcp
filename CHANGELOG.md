@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A day count too large to compute, such as `99999999d`, now gets the accepted formats back rather than an unexpected error. So does `0000-12` as an end date. `9999-12` is now accepted as an end date.
 - A token refresh answered 200 with no usable access token is now a network error. It told you to run `bosch-flow-mcp auth`, though such a response says nothing about your credentials. A non-text token was saved and sent. The next request asks again.
 - A refreshed grant holding a null, blank or otherwise unusable refresh token keeps the stored one. That token was saved over the live one, so the next refresh was refused.
+- A refresh token delivered with no usable access token is kept. It was dropped, though the one sent may already be spent, so the next refresh was refused. It is now saved or held, and the next request refreshes from it.
 
 ## [0.7.0] - 2026-09-05
 

@@ -346,10 +346,11 @@ def _refresh_token() -> str:
         tokens = _current_tokens()
         file_token = _unsaved[0] if _unsaved is not None else tokens.get("refresh_token")
 
-        if not tokens.get("access_token"):
+        if "access_token" not in tokens:
             # A policy choice, made before the expiry and before any refresh: a
             # file with no access token is refused even if it holds a refresh
-            # token that could be tried. Waiting does not change the file.
+            # token that could be tried. Waiting does not change the file. A
+            # blank one is how a refresh token delivered alone is saved.
             raise TokenRefused("Token file has no access token. Run: bosch-flow-mcp auth")
 
         if _usable(tokens):
@@ -409,17 +410,25 @@ def _refresh_token() -> str:
         except ValueError as e:
             raise RefreshNetworkError("Bosch returned an unreadable response.") from e
 
-        if not isinstance(new_tokens, dict) or not _filled(new_tokens.get("access_token")):
+        if not isinstance(new_tokens, dict):
+            new_tokens = {}
+        new_access = new_tokens.get("access_token")
+        new_refresh = new_tokens.get("refresh_token")
+        if not _filled(new_access):
             # A 200 is no verdict: the token endpoint refuses with 400 or 401.
             logger.warning("Token refresh answered 200 with no usable token")
-            raise RefreshNetworkError("Bosch returned no usable token.")
+            if not _filled(new_refresh):
+                raise RefreshNetworkError("Bosch returned no usable token.")
 
-        new_refresh = new_tokens.get("refresh_token")
         refreshed = {
-            "access_token": new_tokens["access_token"],
+            "access_token": new_access if _filled(new_access) else "",
             "refresh_token": new_refresh if _filled(new_refresh) else tokens["refresh_token"],
             "token_type": new_tokens.get("token_type", "Bearer"),
-            "expiry": datetime.now(timezone.utc).timestamp() + new_tokens.get("expires_in", 7200),
+            "expiry": (
+                datetime.now(timezone.utc).timestamp() + new_tokens.get("expires_in", 7200)
+                if _filled(new_access)
+                else 0
+            ),
             "client_id": client_id,
         }
 
@@ -436,6 +445,10 @@ def _refresh_token() -> str:
         # Keyed to what the file holds now, which may have changed during the
         # request: that is what the next call compares against.
         _save(refreshed, on_disk.get("refresh_token") if on_disk is not None else file_token)
+        if not refreshed["access_token"]:
+            # Saved first: the token sent may be spent, so the one delivered is
+            # what the next call refreshes from.
+            raise RefreshNetworkError("Bosch returned no usable token.")
         return refreshed["access_token"]
 
 
