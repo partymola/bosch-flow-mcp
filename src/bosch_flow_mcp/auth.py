@@ -16,6 +16,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import math
 import os
 import secrets
 import socket
@@ -80,6 +81,9 @@ _unsaved: tuple[str | None, dict] | None = None
 NO_REFRESH_TOKEN_MSG = (
     "Bosch issued no refresh token, so run this again when the access token expires."
 )
+
+# Seconds, for a token answer that does not say.
+_DEFAULT_LIFETIME = 7200
 
 # EUDA localhost callback port
 EUDA_CALLBACK_PORT = 4200
@@ -266,6 +270,18 @@ def _filled(token) -> bool:
     )
 
 
+def _expiry_after(lifetime) -> float:
+    """When a token lasting `lifetime` seconds expires, or 0 if that is not a
+    finite positive number, which counts as already expired."""
+    if not isinstance(lifetime, (int, float)) or isinstance(lifetime, bool) or lifetime <= 0:
+        return 0
+    try:
+        expiry = datetime.now(timezone.utc).timestamp() + lifetime
+    except OverflowError:
+        return 0
+    return expiry if math.isfinite(expiry) else 0
+
+
 def _expiry(tokens: dict) -> float:
     """The stored expiry, or 0 when it is unusable."""
     value = tokens.get("expiry", 0)
@@ -414,20 +430,19 @@ def _refresh_token() -> str:
             new_tokens = {}
         new_access = new_tokens.get("access_token")
         new_refresh = new_tokens.get("refresh_token")
-        if not _filled(new_access):
+        access = new_access if _filled(new_access) else ""
+        if not access:
             # A 200 is no verdict: the token endpoint refuses with 400 or 401.
             logger.warning("Token refresh answered 200 with no usable token")
             if not _filled(new_refresh):
                 raise RefreshNetworkError("Bosch returned no usable token.")
 
         refreshed = {
-            "access_token": new_access if _filled(new_access) else "",
+            "access_token": access,
             "refresh_token": new_refresh if _filled(new_refresh) else tokens["refresh_token"],
             "token_type": new_tokens.get("token_type", "Bearer"),
             "expiry": (
-                datetime.now(timezone.utc).timestamp() + new_tokens.get("expires_in", 7200)
-                if _filled(new_access)
-                else 0
+                _expiry_after(new_tokens.get("expires_in", _DEFAULT_LIFETIME)) if access else 0
             ),
             "client_id": client_id,
         }
@@ -445,11 +460,11 @@ def _refresh_token() -> str:
         # Keyed to what the file holds now, which may have changed during the
         # request: that is what the next call compares against.
         _save(refreshed, on_disk.get("refresh_token") if on_disk is not None else file_token)
-        if not refreshed["access_token"]:
+        if not access:
             # Saved first: the token sent may be spent, so the one delivered is
             # what the next call refreshes from.
             raise RefreshNetworkError("Bosch returned no usable token.")
-        return refreshed["access_token"]
+        return access
 
 
 def refresh_token() -> str:
@@ -670,12 +685,16 @@ def _exchange_code(client_id: str, code: str, verifier: str, redirect_uri: str) 
     refresh = tokens.get("refresh_token")
     refresh = refresh if _filled(refresh) else ""
 
-    now = datetime.now(timezone.utc).timestamp()
+    expiry = _expiry_after(tokens.get("expires_in", _DEFAULT_LIFETIME))
+    if not expiry and not refresh:
+        # Already expired with nothing to refresh from, it would never be used.
+        expiry = _expiry_after(_DEFAULT_LIFETIME)
+
     token_store = {
         "access_token": tokens["access_token"],
         "refresh_token": refresh,
         "token_type": tokens.get("token_type", "Bearer"),
-        "expiry": now + tokens.get("expires_in", 7200),
+        "expiry": expiry,
         "client_id": client_id,
     }
     try:

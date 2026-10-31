@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A token refresh answered 200 with no usable access token is now a network error. It told you to run `bosch-flow-mcp auth`, though such a response says nothing about your credentials. A non-text token was saved and sent. The next request asks again.
 - A refreshed grant holding a null, blank or otherwise unusable refresh token keeps the stored one. That token was saved over the live one, so the next refresh was refused.
 - A refresh token delivered with no usable access token is kept. It was dropped, though the one sent may already be spent, so the next refresh was refused. It is now saved or held, and the next request refreshes from it.
+- A token lifetime that is not a finite positive number counts as already expired. `"7200"` or null ended the refresh and lost a good token, and in `bosch-flow-mcp auth` ended in a traceback. An infinite one never refreshed. The tokens are now saved and the next request refreshes. With no refresh token to use, `bosch-flow-mcp auth` applies the default lifetime instead.
 
 ## [0.7.0] - 2026-09-05
 

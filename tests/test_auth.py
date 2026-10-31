@@ -499,6 +499,54 @@ class TestTheTokenFileIsTheOnlyCopy:
             assert auth_module.refresh_token() == "tok-auth"
         assert self._stored()["refresh_token"] == "ref-auth"
 
+    @pytest.mark.parametrize(
+        "lifetime",
+        ["7200", None, [], {}, float("inf"), float("nan"), 0, -1, True, 10**400],
+        ids=[
+            "text",
+            "null",
+            "list",
+            "object",
+            "infinite",
+            "nan",
+            "zero",
+            "negative",
+            "true",
+            "too-big-for-a-float",
+        ],
+    )
+    def test_a_lifetime_that_is_not_a_finite_positive_number_means_already_expired(self, lifetime):
+        """Raising here loses a good rotated token, and one that never expires
+        is never refreshed."""
+        self._write(expiry=0)
+        endpoint = self._rotating(
+            {"access_token": "tok-2", "refresh_token": "ref-2", "expires_in": lifetime},
+            self._NEXT_GRANT,
+        )
+        with patch("urllib.request.urlopen", endpoint["urlopen"]):
+            assert auth_module.refresh_token() == "tok-2"
+            stored = self._stored()
+            assert (stored["access_token"], stored["refresh_token"], stored["expiry"]) == (
+                "tok-2",
+                "ref-2",
+                0,
+            )
+            assert auth_module.refresh_token() == "tok-3"
+        assert endpoint["sent"] == ["ref-old", "ref-2"]
+
+    @pytest.mark.parametrize(
+        "answer,seconds",
+        [({"expires_in": 3600}, 3600), ({"expires_in": 0.5}, 0.5), ({}, 7200)],
+        ids=["whole", "fraction", "absent-keeps-the-default"],
+    )
+    def test_a_usable_lifetime_sets_the_expiry(self, answer, seconds):
+        self._write(expiry=0)
+        grant = {"access_token": "tok-2", "refresh_token": "ref-2", **answer}
+        before = self._now()
+        with patch("urllib.request.urlopen", lambda *a, **k: self._answer(grant)):
+            auth_module.refresh_token()
+        assert before + seconds <= self._stored()["expiry"] <= self._now() + seconds
+
     def test_a_token_file_left_with_a_blank_access_token_is_refreshed(self):
         """What a delivered refresh token is saved as. Only a file with no
         access_token key at all is refused."""
@@ -1741,6 +1789,66 @@ class TestTheCodeExchangeReportsNoResponseContent:
         out = capsys.readouterr().out
         assert "Auth complete" in out
         assert auth_module.NO_REFRESH_TOKEN_MSG in out
+
+    @pytest.mark.parametrize(
+        "lifetime,keeps_expiry",
+        [("7200", False), (None, False), ([], False), (float("inf"), False), (3600, True)],
+        ids=["text", "null", "list", "infinite", "usable"],
+    )
+    def test_a_lifetime_that_cannot_be_used_saves_the_sign_in_as_already_expired(
+        self, lifetime, keeps_expiry, monkeypatch, capsys, tmp_path
+    ):
+        """The authorisation code is spent by now, so a traceback here costs the
+        whole browser flow, and the next call can refresh instead."""
+        tokens_path = tmp_path / "bosch_tokens.json"
+        monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", tokens_path)
+        grant = {"access_token": "at-new", "refresh_token": "rt-new", "expires_in": lifetime}
+        monkeypatch.setattr(
+            auth_module.urllib.request, "urlopen", _responding(json.dumps(grant).encode())
+        )
+
+        auth_module._exchange_code("cid", "the-code", "the-verifier", "http://localhost:1/cb")
+
+        stored = json.loads(tokens_path.read_text())
+        assert (stored["access_token"], stored["refresh_token"]) == ("at-new", "rt-new")
+        assert (stored["expiry"] > 0) is keeps_expiry
+        assert "Auth complete" in capsys.readouterr().out
+
+    @pytest.mark.parametrize(
+        "lifetime,seconds",
+        [("7200", 7200), (None, 7200), ([], 7200), (float("inf"), 7200), (3600, 3600)],
+        ids=["text", "null", "list", "infinite", "usable"],
+    )
+    def test_a_sign_in_with_nothing_to_refresh_from_keeps_a_usable_expiry(
+        self, lifetime, seconds, monkeypatch, tmp_path
+    ):
+        """Saved as already expired, the good access token is never used: the
+        next call finds it expired, with no refresh token to replace it."""
+        tokens_path = tmp_path / "bosch_tokens.json"
+        monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", tokens_path)
+        grant = {"access_token": "at-new", "expires_in": lifetime}
+        monkeypatch.setattr(
+            auth_module.urllib.request, "urlopen", _responding(json.dumps(grant).encode())
+        )
+        before = datetime.now(timezone.utc).timestamp()
+
+        auth_module._exchange_code("cid", "the-code", "the-verifier", "http://localhost:1/cb")
+
+        expiry = json.loads(tokens_path.read_text())["expiry"]
+        assert before + seconds <= expiry <= datetime.now(timezone.utc).timestamp() + seconds
+
+    def test_a_sign_in_with_no_lifetime_keeps_the_default(self, monkeypatch, tmp_path):
+        tokens_path = tmp_path / "bosch_tokens.json"
+        monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", tokens_path)
+        monkeypatch.setattr(
+            auth_module.urllib.request, "urlopen", _responding(b'{"access_token": "at-new"}')
+        )
+        before = datetime.now(timezone.utc).timestamp()
+
+        auth_module._exchange_code("cid", "the-code", "the-verifier", "http://localhost:1/cb")
+
+        stored = json.loads(tokens_path.read_text())
+        assert stored["expiry"] >= before + 7200
 
     def test_a_refresh_token_in_the_answer_replaces_the_stored_one(
         self, monkeypatch, capsys, tmp_path
