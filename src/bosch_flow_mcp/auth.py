@@ -408,14 +408,13 @@ def _refresh_token() -> str:
                 # the file now holds a different one, another writer replaced
                 # it, and the next call refreshes from it.
                 on_disk = _reread_tokens()
+                # A held grant was the token refused, so it goes.
+                _unsaved = None
                 if on_disk is None:
-                    # Nothing to compare the refusal with. A held grant was
-                    # the token refused, so it goes, and the next call's read
-                    # of the file decides.
-                    _unsaved = None
+                    # Nothing to compare the refusal with, so the next call's
+                    # read of the file decides.
                     logger.warning("Token refresh refused while the token file was unreadable")
                     raise RefreshNetworkError("The token file could not be read.") from e
-                _unsaved = None
                 if on_disk.get("refresh_token") not in (tokens.get("refresh_token"), file_token):
                     if _usable(on_disk):
                         logger.warning("Token refresh refused, but the token file was replaced")
