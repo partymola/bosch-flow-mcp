@@ -14,6 +14,7 @@ Two auth paths (auto-detected):
 import base64
 import contextlib
 import hashlib
+import http.client
 import json
 import logging
 import math
@@ -660,7 +661,7 @@ def _exchange_code(client_id: str, code: str, verifier: str, redirect_uri: str) 
         # account out of an error body, and this prints to a terminal.
         print(f"Error exchanging code: HTTP {e.code}.", file=sys.stderr)
         sys.exit(1)
-    except OSError as e:
+    except (OSError, http.client.HTTPException) as e:
         # Wider than URLError, for the reason _refresh_token already documents:
         # urlopen wraps only connect-phase failures in it, so a read timeout or
         # a reset connection arrives bare and would otherwise escape as a
@@ -673,7 +674,7 @@ def _exchange_code(client_id: str, code: str, verifier: str, redirect_uri: str) 
     # neither handler above catches ValueError.
     try:
         tokens = json.loads(raw)
-    except ValueError:
+    except (ValueError, RecursionError):
         print("Error exchanging code: the response was not readable.", file=sys.stderr)
         sys.exit(1)
 

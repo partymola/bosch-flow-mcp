@@ -1,5 +1,6 @@
 """Tests for auth token management."""
 
+import http.client
 import io
 import json
 import logging
@@ -2079,6 +2080,47 @@ class TestTheCodeExchangeReportsNoResponseContent:
             raise TimeoutError("timed out")
 
         self._run(monkeypatch, raiser, capsys, caplog, "Error exchanging code: TimeoutError.")
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            http.client.IncompleteRead(b"partial"),
+            http.client.BadStatusLine("garbage"),
+            http.client.LineTooLong("header line"),
+        ],
+        ids=["incomplete-read", "bad-status-line", "line-too-long"],
+    )
+    def test_a_malformed_http_response_is_handled_rather_than_traced(
+        self, failure, monkeypatch, capsys, caplog
+    ):
+        """These are not OSError. The code is spent by now, and a traceback
+        names this install's paths."""
+
+        def raiser(req, timeout=None):
+            resp = MagicMock()
+            resp.read.side_effect = failure
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = lambda *a: False
+            return resp
+
+        self._run(
+            monkeypatch,
+            raiser,
+            capsys,
+            caplog,
+            f"Error exchanging code: {type(failure).__name__}.",
+        )
+
+    def test_a_body_nested_too_deeply_to_parse_is_handled_rather_than_traced(
+        self, monkeypatch, capsys, caplog
+    ):
+        self._run(
+            monkeypatch,
+            _responding(b"[" * 1_000_000),
+            capsys,
+            caplog,
+            "Error exchanging code: the response was not readable.",
+        )
 
     def test_a_body_that_is_not_json_is_handled_rather_than_traced(
         self, monkeypatch, capsys, caplog
