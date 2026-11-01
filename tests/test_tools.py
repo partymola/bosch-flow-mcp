@@ -1,11 +1,12 @@
 """Tests for MCP tool output formatting."""
 
 import json
+from datetime import date
 from unittest.mock import patch
 
 import pytest
 
-from tests.conftest import FAKE_BIKE_ID
+from tests.conftest import FAKE_BATTERY_ID, FAKE_BIKE_ID
 
 
 @pytest.fixture(autouse=True)
@@ -121,6 +122,46 @@ async def test_bosch_get_batteries_history():
     )
     data = json.loads(result)
     assert data["count"] > 1  # Multiple snapshots over time
+
+
+async def test_a_months_battery_history_includes_its_last_day():
+    from bosch_flow_mcp import db
+    from bosch_flow_mcp.tools.battery_tools import bosch_get_batteries
+
+    last_day = "2026-04-30T08:00:00.123456+00:00"
+    conn = db.get_db()
+    db.save_battery_snapshot(conn, FAKE_BIKE_ID, {"battery_id": FAKE_BATTERY_ID}, last_day)
+    conn.commit()
+    conn.close()
+
+    result = await bosch_get_batteries(latest_only=False, start_date="2026-04", end_date="2026-04")
+    data = json.loads(result)
+    assert [b["captured_at"] for b in data["batteries"]] == [
+        "2026-04-01T08:00:00+00:00",
+        "2026-04-07T08:00:00+00:00",
+        last_day,
+    ]
+
+
+async def test_a_day_count_includes_today():
+    from bosch_flow_mcp import db
+    from bosch_flow_mcp.tools.battery_tools import bosch_get_batteries
+
+    today = f"{date.today().isoformat()}T08:00:00.123456+00:00"
+    conn = db.get_db()
+    db.save_battery_snapshot(conn, FAKE_BIKE_ID, {"battery_id": FAKE_BATTERY_ID}, today)
+    conn.commit()
+    conn.close()
+
+    result = await bosch_get_batteries(latest_only=False, start_date="1d")
+    assert [b["captured_at"] for b in json.loads(result)["batteries"]] == [today]
+
+
+async def test_a_single_day_of_software_updates_includes_that_day():
+    from bosch_flow_mcp.tools.service_tools import bosch_get_software_updates
+
+    result = await bosch_get_software_updates(start_date="2026-03-20", end_date="2026-03-20")
+    assert json.loads(result)["count"] == 1
 
 
 async def test_bosch_get_components_all():

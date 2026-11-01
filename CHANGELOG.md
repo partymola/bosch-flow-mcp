@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A token refresh answered with a refresh token but no usable access token keeps that refresh token. It was dropped, though the one sent may already be spent. The next refresh was then refused. The next request now refreshes from the new token.
 - A token lifetime that is not a finite positive number counts as already expired. A lifetime of `"7200"` or null ended the refresh and lost a good token. In `bosch-flow-mcp auth` it ended in a traceback. An infinite lifetime never refreshed. The tokens are now saved, and every request refreshes while the answers stay like that. With no refresh token to use, `bosch-flow-mcp auth` applies the default lifetime instead.
 - A stored access token that is blank or not valid token text is refreshed rather than sent. A stored refresh token of that kind is reported as missing. A stored expiry that is infinite, or too large for a float, counts as expired. Such a token never refreshed.
+- A date range includes all of its end date. The end date was compared as text against stored timestamps, so every timestamp on that day was left out. A month's battery history lost its last day. `start_date="1d"` returned none of today's snapshots. `bosch_battery_trends` and `bosch_get_software_updates` lost the same day.
 
 ## [0.7.0] - 2026-09-05
 

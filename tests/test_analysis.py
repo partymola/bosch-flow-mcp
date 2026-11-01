@@ -87,6 +87,15 @@ async def test_battery_trends_filtered_by_bike():
         assert t["bike_id"] == FAKE_BIKE_ID
 
 
+async def test_battery_trends_include_the_end_date():
+    from bosch_flow_mcp.tools.analysis_tools import bosch_battery_trends
+
+    result = await bosch_battery_trends(start_date="2026-04-07", end_date="2026-04-07")
+    data = json.loads(result)
+    assert data["data_points"] == 1
+    assert [t["period"] for t in data["trends"]] == ["2026-04"]
+
+
 async def test_battery_trends_no_data(tmp_path, monkeypatch):
     """Returns helpful message when no data is in the cache."""
     import bosch_flow_mcp.db as db_module

@@ -252,3 +252,87 @@ def test_last_sync_note_uses_latest_row(tmp_db):
 
 def test_last_sync_note_no_rows(tmp_db):
     assert db.last_sync_note(tmp_db, "service") is None
+
+
+# --- Date ranges
+
+
+def _save_battery(conn, stamp):
+    db.save_battery_snapshot(conn, FAKE_BIKE_ID, {"battery_id": FAKE_BATTERY_ID}, stamp)
+
+
+def _save_soc(conn, stamp):
+    db.save_soc_snapshot(conn, FAKE_BIKE_ID, {"stateOfChargeLatestUpdate": stamp})
+
+
+def _save_service(conn, stamp):
+    db.save_service_record(conn, FAKE_BIKE_ID, {"id": "SVC1", "date": stamp})
+
+
+def _save_update(conn, stamp):
+    db.save_software_update(conn, FAKE_BIKE_ID, {"installedAt": stamp, "component": "driveUnit"})
+
+
+RANGE_QUERIES = {
+    "batteries_one_bike": (
+        _save_battery,
+        lambda c, s, e: db.query_batteries(c, FAKE_BIKE_ID, s, e),
+    ),
+    "batteries_any_bike": (_save_battery, lambda c, s, e: db.query_batteries(c, None, s, e)),
+    "soc": (_save_soc, lambda c, s, e: db.query_soc_snapshots(c, FAKE_BIKE_ID, s, e)),
+    "service": (_save_service, lambda c, s, e: db.query_service_records(c, FAKE_BIKE_ID, s, e)),
+    "updates": (_save_update, lambda c, s, e: db.query_software_updates(c, FAKE_BIKE_ID, s, e)),
+}
+
+
+@pytest.mark.parametrize("query", RANGE_QUERIES)
+class TestADateRangeCoversWholeDays:
+    """The bounds are dates, and most stored values are full timestamps."""
+
+    # Mid-month, so a comparison that stopped at the month would be seen.
+    START, END = "2026-03-01", "2026-03-15"
+
+    def _rows(self, conn, query, stamp, start=START, end=END):
+        save, read = RANGE_QUERIES[query]
+        save(conn, stamp)
+        conn.commit()
+        # Without this, a row that was never stored would pass the "left out" tests.
+        assert len(read(conn, "2000-01-01", "2999-12-31")) == 1
+        return read(conn, start, end)
+
+    @pytest.mark.parametrize(
+        "stamp",
+        [
+            "2026-03-15",
+            "2026-03-15T00:00:00Z",
+            "2026-03-15T08:00:00.123456+00:00",
+            "2026-03-15T23:59:59Z",
+            # SQLite's date() reads this as the 16th, its UTC date.
+            "2026-03-15T23:30:00-05:00",
+        ],
+    )
+    def test_the_end_date_includes_all_of_that_day(self, tmp_db, query, stamp):
+        assert len(self._rows(tmp_db, query, stamp)) == 1
+
+    @pytest.mark.parametrize(
+        "stamp",
+        ["2026-03-16", "2026-03-16T00:00:00Z", "2026-03-16T00:00:00.000001+00:00"],
+    )
+    def test_the_day_after_the_end_date_is_left_out(self, tmp_db, query, stamp):
+        assert self._rows(tmp_db, query, stamp) == []
+
+    @pytest.mark.parametrize(
+        "stamp",
+        ["2026-03-01", "2026-03-01T00:00:00Z", "2026-03-01T08:00:00.123456+00:00"],
+    )
+    def test_the_start_date_includes_all_of_that_day(self, tmp_db, query, stamp):
+        assert len(self._rows(tmp_db, query, stamp)) == 1
+
+    @pytest.mark.parametrize("stamp", ["2026-02-28", "2026-02-28T23:59:59Z"])
+    def test_the_day_before_the_start_date_is_left_out(self, tmp_db, query, stamp):
+        assert self._rows(tmp_db, query, stamp) == []
+
+    def test_the_last_date_a_tool_accepts_still_answers(self, tmp_db, query):
+        """`9999-12` is an accepted end date, and SQLite's date() has no day after it."""
+        rows = self._rows(tmp_db, query, "2026-03-15T08:00:00Z", end="9999-12-31")
+        assert len(rows) == 1

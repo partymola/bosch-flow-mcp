@@ -366,12 +366,12 @@ def query_batteries(
     if bike_id:
         rows = conn.execute(
             """SELECT * FROM batteries WHERE bike_id = ?
-            AND captured_at >= ? AND captured_at <= ? ORDER BY captured_at""",
+            AND captured_at >= ? AND substr(captured_at, 1, 10) <= ? ORDER BY captured_at""",
             (bike_id, start_date, end_date),
         ).fetchall()
     else:
         rows = conn.execute(
-            """SELECT * FROM batteries WHERE captured_at >= ? AND captured_at <= ?
+            """SELECT * FROM batteries WHERE captured_at >= ? AND substr(captured_at, 1, 10) <= ?
             ORDER BY bike_id, captured_at""",
             (start_date, end_date),
         ).fetchall()
@@ -453,7 +453,7 @@ def query_service_records(
         where.append("service_date >= ?")
         params.append(start_date)
     if end_date:
-        where.append("service_date <= ?")
+        where.append("substr(service_date, 1, 10) <= ?")
         params.append(end_date)
     sql = "SELECT * FROM service_records"
     if where:
@@ -475,7 +475,7 @@ def query_software_updates(
         where.append("installed_at >= ?")
         params.append(start_date)
     if end_date:
-        where.append("installed_at <= ?")
+        where.append("substr(installed_at, 1, 10) <= ?")
         params.append(end_date)
     sql = "SELECT * FROM software_updates"
     if where:
@@ -509,7 +509,7 @@ def query_soc_snapshots(
 ) -> list[dict]:
     rows = conn.execute(
         """SELECT * FROM soc_snapshots
-        WHERE bike_id = ? AND captured_at >= ? AND captured_at <= ?
+        WHERE bike_id = ? AND captured_at >= ? AND substr(captured_at, 1, 10) <= ?
         ORDER BY captured_at""",
         (bike_id, start_date, end_date),
     ).fetchall()
