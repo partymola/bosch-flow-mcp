@@ -164,6 +164,67 @@ async def test_a_single_day_of_software_updates_includes_that_day():
     assert json.loads(result)["count"] == 1
 
 
+async def test_battery_history_with_only_an_end_date_counts_back_from_it():
+    from bosch_flow_mcp import db
+    from bosch_flow_mcp.tools.battery_tools import bosch_get_batteries
+
+    conn = db.get_db()
+    db.save_battery_snapshot(
+        conn, FAKE_BIKE_ID, {"battery_id": FAKE_BATTERY_ID}, "2026-02-01T08:00:00+00:00"
+    )
+    conn.commit()
+    conn.close()
+
+    result = await bosch_get_batteries(latest_only=False, end_date="2026-03-15")
+    assert [b["captured_at"] for b in json.loads(result)["batteries"]] == [
+        "2026-03-01T08:00:00+00:00",
+        "2026-03-08T08:00:00+00:00",
+        "2026-03-15T08:00:00+00:00",
+    ]
+
+
+async def test_activities_with_only_an_end_date_count_back_from_it():
+    from bosch_flow_mcp.tools.activity_tools import bosch_get_activities
+
+    with patch("bosch_flow_mcp.tools.activity_tools.api.get", return_value={"data": []}):
+        result = await bosch_get_activities(end_date="2026-03-31")
+    assert json.loads(result)["window"] == {"start": "2026-03-01", "end": "2026-03-31"}
+
+
+async def test_service_records_with_only_an_end_date_go_back_to_the_first():
+    from bosch_flow_mcp import db
+    from bosch_flow_mcp.tools.service_tools import bosch_get_service_records
+
+    conn = db.get_db()
+    db.save_service_record(conn, FAKE_BIKE_ID, {"id": "SVC-OLD", "date": "2020-01-15"})
+    conn.commit()
+    conn.close()
+
+    result = await bosch_get_service_records(end_date="2026-03-31")
+    assert [r["record_id"] for r in json.loads(result)["service_records"]] == ["SVC001", "SVC-OLD"]
+    result = await bosch_get_service_records(end_date="2026-03-01")
+    assert [r["record_id"] for r in json.loads(result)["service_records"]] == ["SVC-OLD"]
+
+
+async def test_software_updates_with_only_an_end_date_go_back_to_the_first():
+    from bosch_flow_mcp import db
+    from bosch_flow_mcp.tools.service_tools import bosch_get_software_updates
+
+    old = "2020-01-15T12:00:00Z"
+    conn = db.get_db()
+    db.save_software_update(conn, FAKE_BIKE_ID, {"installedAt": old, "component": "driveUnit"})
+    conn.commit()
+    conn.close()
+
+    result = await bosch_get_software_updates(end_date="2026-03-31")
+    assert [u["installed_at"] for u in json.loads(result)["software_updates"]] == [
+        "2026-03-20T12:00:00Z",
+        old,
+    ]
+    result = await bosch_get_software_updates(end_date="2026-03-01")
+    assert [u["installed_at"] for u in json.loads(result)["software_updates"]] == [old]
+
+
 async def test_bosch_get_components_all():
     from bosch_flow_mcp.tools.component_tools import bosch_get_components
 

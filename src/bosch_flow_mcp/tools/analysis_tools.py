@@ -73,7 +73,7 @@ async def bosch_battery_trends(
         if start_date or end_date:
             from ..helpers import parse_date
 
-            start, end = parse_date(start_date, end_date, default_days=180)
+            start, end = parse_date(start_date or "2000-01-01", end_date)
             start_str, end_str = start.isoformat(), end.isoformat()
         else:
             start_str, end_str = "2000-01-01", "2999-12-31"

@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A token lifetime that is not a finite positive number counts as already expired. A lifetime of `"7200"` or null ended the refresh and lost a good token. In `bosch-flow-mcp auth` it ended in a traceback. An infinite lifetime never refreshed. The tokens are now saved, and every request refreshes while the answers stay like that. With no refresh token to use, `bosch-flow-mcp auth` applies the default lifetime instead.
 - A stored access token that is blank or not valid token text is refreshed rather than sent. A stored refresh token of that kind is reported as missing. A stored expiry that is infinite, or too large for a float, counts as expired. Such a token never refreshed.
 - A date range includes all of its end date. The end date was compared as text against stored timestamps, so every timestamp on that day was left out. A month's battery history lost its last day. `start_date="1d"` returned none of today's snapshots. `bosch_battery_trends` and `bosch_get_software_updates` lost the same day.
+- An end date with no start date no longer returns nothing. The missing start was counted back from today, so an older end date made an empty range. `bosch_battery_trends` then said to run `bosch_sync`, with data in the cache. `bosch_battery_trends`, `bosch_get_service_records` and `bosch_get_software_updates` now return everything up to the end date. `bosch_get_batteries` and `bosch_get_activities` now start 30 days before the end date.
 
 ## [0.7.0] - 2026-09-05
 

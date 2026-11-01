@@ -27,7 +27,8 @@ async def bosch_get_batteries(
 
     Args:
         bike_id: Optional bike UUID to filter to one bike.
-        start_date: Start date (YYYY-MM-DD, YYYY-MM, or Nd like "30d"). Default: 30 days ago.
+        start_date: Start date (YYYY-MM-DD, YYYY-MM, or Nd like "30d"). Default: 30 days before
+            the end date.
         end_date: End date. Default: today.
         latest_only: If True (default), return only the most recent snapshot per bike.
             Set to False to return all snapshots in the date range.

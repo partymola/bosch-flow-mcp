@@ -34,7 +34,7 @@ async def bosch_get_service_records(
         start_str = None
         end_str = None
         if start_date or end_date:
-            start, end = parse_date(start_date, end_date, default_days=365)
+            start, end = parse_date(start_date or "2000-01-01", end_date)
             start_str = start.isoformat()
             end_str = end.isoformat()
         records = db.query_service_records(conn, bike_id, start_str, end_str)
@@ -74,7 +74,7 @@ async def bosch_get_software_updates(
         start_str = None
         end_str = None
         if start_date or end_date:
-            start, end = parse_date(start_date, end_date, default_days=365)
+            start, end = parse_date(start_date or "2000-01-01", end_date)
             start_str = start.isoformat()
             end_str = end.isoformat()
         updates = db.query_software_updates(conn, bike_id, start_str, end_str)

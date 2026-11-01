@@ -36,6 +36,17 @@ def test_parse_date_defaults():
     assert start == today - timedelta(days=30)
 
 
+def test_parse_date_counts_a_missing_start_back_from_the_end_date():
+    assert parse_date(None, "2026-03-31", default_days=30) == (date(2026, 3, 1), date(2026, 3, 31))
+
+
+def test_parse_date_counting_back_stops_at_the_first_date_there_is():
+    """`date` raises OverflowError past year 1, which reaches the caller with no
+    guidance, for an end date the tools accept."""
+    assert parse_date(None, "0001-01-15", default_days=30) == (date.min, date(1, 1, 15))
+    assert parse_date("0001-01-02", "0001-01-15") == (date(1, 1, 2), date(1, 1, 15))
+
+
 def test_parse_date_iso_format():
     start, end = parse_date("2026-03-01", "2026-03-31")
     assert start == date(2026, 3, 1)

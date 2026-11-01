@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tests.conftest import FAKE_BIKE_ID
+from tests.conftest import FAKE_BATTERY_ID, FAKE_BIKE_ID
 
 
 @pytest.fixture(autouse=True)
@@ -94,6 +94,21 @@ async def test_battery_trends_include_the_end_date():
     data = json.loads(result)
     assert data["data_points"] == 1
     assert [t["period"] for t in data["trends"]] == ["2026-04"]
+
+
+async def test_battery_trends_with_only_an_end_date_go_back_to_the_first():
+    from bosch_flow_mcp import db
+    from bosch_flow_mcp.tools.analysis_tools import bosch_battery_trends
+
+    conn = db.get_db()
+    db.save_battery_snapshot(
+        conn, FAKE_BIKE_ID, {"battery_id": FAKE_BATTERY_ID}, "2020-01-15T08:00:00+00:00"
+    )
+    conn.commit()
+    conn.close()
+
+    result = await bosch_battery_trends(end_date="2026-03-31")
+    assert [t["period"] for t in json.loads(result)["trends"]] == ["2020-01", "2026-03"]
 
 
 async def test_battery_trends_no_data(tmp_path, monkeypatch):
