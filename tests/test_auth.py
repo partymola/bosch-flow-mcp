@@ -348,6 +348,26 @@ class TestTheTokenFileIsTheOnlyCopy:
         assert sent == [euda]
         assert self._stored()["client_id"] == euda
 
+    @pytest.mark.parametrize("stored", [None, "", 123], ids=["null", "blank", "number"])
+    def test_a_refresh_with_no_client_in_the_file_sends_and_saves_the_configured_one(
+        self, stored, tmp_path, monkeypatch
+    ):
+        euda = "euda-00000000-0000-0000-0000-000000000009"
+        config = tmp_path / "bosch_config.json"
+        config.write_text(json.dumps({"client_id": euda}))
+        monkeypatch.setattr(auth_module, "BOSCH_CONFIG_PATH", config)
+        self._write(expiry=0, client_id=stored)
+        sent = []
+
+        def urlopen(request, timeout=None):
+            sent.append(parse_qs(request.data.decode())["client_id"][0])
+            return self._answer(self._REFRESHED)
+
+        with patch("urllib.request.urlopen", urlopen):
+            auth_module.refresh_token()
+        assert sent == [euda]
+        assert self._stored()["client_id"] == euda
+
     @pytest.mark.parametrize("truncate", [False, True], ids=["file-intact", "file-emptied"])
     def test_a_held_grant_that_expires_is_refreshed_with_its_own_refresh_token(self, truncate):
         """The file's refresh token is the one the held grant replaced, and may
@@ -1207,6 +1227,50 @@ class TestTheRoutingHelpersNeverRaise:
         path.write_text(contents)
         monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", path)
         assert auth_module.token_is_euda() is False
+
+    _NO_CLIENT = pytest.mark.parametrize(
+        "client_id",
+        [123, True, ["euda-x"], None, ""],
+        ids=["number", "boolean", "list", "null", "blank"],
+    )
+
+    @_NO_CLIENT
+    def test_a_token_file_naming_no_client_as_text_falls_back(
+        self, client_id, tmp_path, monkeypatch
+    ):
+        path = tmp_path / "bosch_tokens.json"
+        path.write_text(json.dumps({"client_id": client_id}))
+        monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", path)
+        assert auth_module.current_client_id() == CLIENT_ID
+        assert auth_module.token_is_euda() is False
+
+    @_NO_CLIENT
+    def test_a_config_naming_no_client_as_text_falls_back(self, client_id, tmp_path, monkeypatch):
+        path = tmp_path / "bosch_config.json"
+        path.write_text(json.dumps({"client_id": client_id}))
+        monkeypatch.setattr(auth_module, "BOSCH_CONFIG_PATH", path)
+        assert auth_module.current_client_id() == CLIENT_ID
+        assert auth_module.token_is_euda() is False
+
+    def test_a_token_file_naming_no_client_as_text_does_not_stop_a_sync(
+        self, tmp_path, monkeypatch
+    ):
+        """run_sync routes before its handlers start."""
+        from bosch_flow_mcp.tools.sync_tools import run_sync
+
+        path = tmp_path / "bosch_tokens.json"
+        path.write_text(json.dumps({"client_id": 123}))
+        monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", path)
+        monkeypatch.setenv("BOSCH_FLOW_MCP_DB_PATH", str(tmp_path / "test.db"))
+        assert run_sync(["not-a-type"])["not-a-type"]["code"] == "unknown_type"
+
+    def test_a_config_client_that_is_not_text_stops_the_auth_command(self, tmp_path, monkeypatch):
+        """Falling back here would send the user through a login for the wrong client."""
+        path = tmp_path / "bosch_config.json"
+        path.write_text(json.dumps({"client_id": 123}))
+        monkeypatch.setattr(auth_module, "BOSCH_CONFIG_PATH", path)
+        with pytest.raises(auth_module.TokenRefused, match="malformed"):
+            auth_module._is_euda()
 
 
 class TestRefusalsAreNotNetworkConditions:

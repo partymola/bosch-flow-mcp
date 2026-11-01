@@ -188,6 +188,12 @@ def _load_json(path) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _named_client(data: dict) -> str:
+    """The client a credential file names, or "" if it names none as text."""
+    cid = data.get("client_id")
+    return cid if isinstance(cid, str) else ""
+
+
 def _get_client_id() -> str:
     """Return the client_id to use for auth. EUDA config takes priority."""
     if BOSCH_CONFIG_PATH.exists():
@@ -195,9 +201,7 @@ def _get_client_id() -> str:
             cfg = _load_json(BOSCH_CONFIG_PATH)
         except RuntimeError:
             return CLIENT_ID
-        cid = cfg.get("client_id", "")
-        if cid:
-            return cid
+        return _named_client(cfg) or CLIENT_ID
     return CLIENT_ID
 
 
@@ -214,7 +218,9 @@ def _is_euda() -> bool:
         # send them through a full browser login that quietly yields the wrong
         # client and then looks consistent afterwards.
         cfg = _load_json(BOSCH_CONFIG_PATH)
-        return bool(cfg.get("client_id", ""))
+        if cfg.get("client_id") and not _named_client(cfg):
+            raise TokenRefused(f"{BOSCH_CONFIG_PATH.name} is malformed.")
+        return bool(_named_client(cfg))
     return False
 
 
@@ -230,9 +236,7 @@ def current_client_id() -> str:
     """
     try:
         if BOSCH_TOKENS_PATH.exists():
-            cid = _load_json(BOSCH_TOKENS_PATH).get("client_id")
-            if cid:
-                return cid
+            return _named_client(_load_json(BOSCH_TOKENS_PATH)) or _get_client_id()
         return _get_client_id()
     except RuntimeError:
         # The configured client, not the hardcoded one: a EUDA user with a
@@ -380,7 +384,7 @@ def _refresh_token() -> str:
             raise TokenRefused("Token expired and no refresh token. Run: bosch-flow-mcp auth")
 
         # Use whichever client_id was used to obtain the token
-        client_id = tokens.get("client_id", _get_client_id())
+        client_id = _named_client(tokens) or _get_client_id()
 
         # Public client refresh - no client_secret needed
         data = urlencode(

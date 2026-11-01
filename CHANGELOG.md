@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A date range includes all of its end date. The end date was compared as text against stored timestamps, so every timestamp on that day was left out. A month's battery history lost its last day. `start_date="1d"` returned none of today's snapshots. `bosch_battery_trends` and `bosch_get_software_updates` lost the same day.
 - An end date with no start date no longer returns nothing. The missing start was counted back from today, so an older end date made an empty range. `bosch_battery_trends` then said to run `bosch_sync`, with data in the cache. `bosch_battery_trends`, `bosch_get_service_records` and `bosch_get_software_updates` now return everything up to the end date. `bosch_get_batteries` and `bosch_get_activities` now start 30 days before the end date.
 - `bosch-flow-mcp auth` reports a malformed HTTP response or a JSON body nested too deeply to parse. Each ended in a traceback after the authorisation code was spent.
+- A `client_id` that is not text in the token file or the config no longer stops a sync. It raised an unexpected error before the sync started. A null one in the token file was sent to Bosch as `None` on a refresh. The configured client is now used instead.
 
 ## [0.7.0] - 2026-09-05
 
