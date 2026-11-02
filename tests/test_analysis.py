@@ -142,3 +142,28 @@ async def test_a_range_with_no_data_says_so_rather_than_to_sync(dates):
     data = json.loads(await bosch_battery_trends(**dates))
     assert data["message"] == "No battery data in that date range."
     assert data["trends"] == []
+
+
+@pytest.mark.parametrize("dates", [{}, {"start_date": "30d"}], ids=["no-range", "range"])
+async def test_an_empty_cache_says_why_the_last_sync_left_it_empty(tmp_path, monkeypatch, dates):
+    """A range says the range is empty, so without this a failed sync goes unmentioned."""
+    from bosch_flow_mcp import db
+    from bosch_flow_mcp.tools.analysis_tools import bosch_battery_trends
+
+    db_file = tmp_path / "empty.db"
+    conn = db.get_db(db_file)
+    db.log_sync(conn, "batteries", "auth_error", 0, "Run: bosch-flow-mcp auth")
+    conn.close()
+    monkeypatch.setenv("BOSCH_FLOW_MCP_DB_PATH", str(db_file))
+
+    data = json.loads(await bosch_battery_trends(**dates))
+    assert data["data_status"] == "auth_error"
+    assert data["note"] == "Run: bosch-flow-mcp auth"
+    assert data["trends"] == []
+
+
+async def test_an_empty_range_adds_no_note_after_a_good_sync():
+    from bosch_flow_mcp.tools.analysis_tools import bosch_battery_trends
+
+    data = json.loads(await bosch_battery_trends(start_date="2030-01"))
+    assert "note" not in data

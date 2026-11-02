@@ -7,7 +7,7 @@ from typing import Literal
 import anyio
 
 from .. import db
-from ..helpers import format_response, require_auth
+from ..helpers import empty_data_note, format_response, require_auth
 from ..mcp_instance import mcp
 from .sync_tools import auto_sync_if_stale
 
@@ -78,6 +78,7 @@ async def bosch_battery_trends(
         else:
             start_str, end_str = "2000-01-01", "2999-12-31"
         snapshots = db.query_batteries(conn, bike_id, start_str, end_str)
+        note = empty_data_note(conn, "batteries", fallback_type="bikes") if not snapshots else {}
     finally:
         conn.close()
 
@@ -88,6 +89,7 @@ async def bosch_battery_trends(
                 if start_date or end_date
                 else "No battery data found. Run bosch_sync first.",
                 "trends": [],
+                **note,
             }
         )
 
