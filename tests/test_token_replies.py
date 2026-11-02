@@ -147,6 +147,17 @@ class TestOnlyWhatWasCheckedIsSaved:
             assert reply_value not in captured.out + captured.err
 
 
+def test_every_character_the_rule_allows_is_token_text():
+    allowed = "".join(chr(code) for code in range(0x20, 0x7F))
+    assert [char for char in allowed if not auth_module._is_token(f"a{char}b")] == []
+    assert auth_module._is_token(allowed)
+
+
+def test_a_character_outside_the_rule_is_not_token_text():
+    outside = [*range(0x20), 0x7F, 0x80, 0xFF, 0x100]
+    assert [code for code in outside if auth_module._is_token(f"a{chr(code)}b")] == []
+
+
 EUDA = "euda-00000000-0000-0000-0000-000000000009"
 
 
