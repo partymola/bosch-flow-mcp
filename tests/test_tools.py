@@ -1,7 +1,7 @@
 """Tests for MCP tool output formatting."""
 
 import json
-from datetime import date
+from datetime import date, datetime
 from unittest.mock import patch
 
 import pytest
@@ -168,15 +168,16 @@ async def test_battery_history_with_only_an_end_date_counts_back_from_it():
     from bosch_flow_mcp import db
     from bosch_flow_mcp.tools.battery_tools import bosch_get_batteries
 
+    # Exactly 30 days before the end date, and the moment before that day.
     conn = db.get_db()
-    db.save_battery_snapshot(
-        conn, FAKE_BIKE_ID, {"battery_id": FAKE_BATTERY_ID}, "2026-02-01T08:00:00+00:00"
-    )
+    for stamp in ("2026-02-12T23:59:59+00:00", "2026-02-13T00:00:00+00:00"):
+        db.save_battery_snapshot(conn, FAKE_BIKE_ID, {"battery_id": FAKE_BATTERY_ID}, stamp)
     conn.commit()
     conn.close()
 
     result = await bosch_get_batteries(latest_only=False, end_date="2026-03-15")
     assert [b["captured_at"] for b in json.loads(result)["batteries"]] == [
+        "2026-02-13T00:00:00+00:00",
         "2026-03-01T08:00:00+00:00",
         "2026-03-08T08:00:00+00:00",
         "2026-03-15T08:00:00+00:00",
@@ -186,9 +187,18 @@ async def test_battery_history_with_only_an_end_date_counts_back_from_it():
 async def test_activities_with_only_an_end_date_count_back_from_it():
     from bosch_flow_mcp.tools.activity_tools import bosch_get_activities
 
-    with patch("bosch_flow_mcp.tools.activity_tools.api.get", return_value={"data": []}):
-        result = await bosch_get_activities(end_date="2026-03-31")
-    assert json.loads(result)["window"] == {"start": "2026-03-01", "end": "2026-03-31"}
+    def ride(day):
+        started = datetime.fromisoformat(f"{day}T12:00:00+00:00").timestamp()
+        return {"id": day, "attributes": {"startTime": int(started)}}
+
+    days = ["2026-02-28", "2026-03-01", "2026-03-31", "2026-04-01"]
+    with patch(
+        "bosch_flow_mcp.tools.activity_tools.api.get",
+        return_value={"data": [ride(day) for day in days]},
+    ):
+        data = json.loads(await bosch_get_activities(end_date="2026-03-31"))
+    assert data["window"] == {"start": "2026-03-01", "end": "2026-03-31"}
+    assert [a["id"] for a in data["activities"]] == ["2026-03-31", "2026-03-01"]
 
 
 async def test_service_records_with_only_an_end_date_go_back_to_the_first():
