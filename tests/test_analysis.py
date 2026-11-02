@@ -123,5 +123,22 @@ async def test_battery_trends_no_data(tmp_path, monkeypatch):
 
     result = await bosch_battery_trends()
     data = json.loads(result)
-    assert "message" in data
-    assert "bosch_sync" in data["message"]
+    assert data["message"] == "No battery data found. Run bosch_sync first."
+
+
+@pytest.mark.parametrize(
+    "dates",
+    [
+        {"start_date": "2030-01"},
+        {"start_date": "2026-03-20", "end_date": "2026-03-21"},
+        {"end_date": "2020-01"},
+    ],
+    ids=["start-only", "both", "end-only"],
+)
+async def test_a_range_with_no_data_says_so_rather_than_to_sync(dates):
+    """A sync adds nothing to a range the cache already covers."""
+    from bosch_flow_mcp.tools.analysis_tools import bosch_battery_trends
+
+    data = json.loads(await bosch_battery_trends(**dates))
+    assert data["message"] == "No battery data in that date range."
+    assert data["trends"] == []

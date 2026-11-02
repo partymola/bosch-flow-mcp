@@ -84,7 +84,9 @@ async def bosch_battery_trends(
     if not snapshots:
         return format_response(
             {
-                "message": "No battery data found. Run bosch_sync first.",
+                "message": "No battery data in that date range."
+                if start_date or end_date
+                else "No battery data found. Run bosch_sync first.",
                 "trends": [],
             }
         )
