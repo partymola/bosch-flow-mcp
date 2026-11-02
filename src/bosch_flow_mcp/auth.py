@@ -268,7 +268,7 @@ def _generate_pkce() -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def _filled(token) -> bool:
+def _is_token(token) -> bool:
     """Whether a token is RFC 6749's token syntax (A.12, A.17) and not only spaces."""
     return (
         isinstance(token, str) and token.isascii() and token.isprintable() and bool(token.strip())
@@ -300,7 +300,7 @@ def _expiry(tokens: dict) -> float:
 def _usable(tokens: dict) -> bool:
     """Whether the stored access token can be sent, with the 5-minute buffer."""
     now = datetime.now(timezone.utc).timestamp()
-    return _filled(tokens.get("access_token")) and now < _expiry(tokens) - 300
+    return _is_token(tokens.get("access_token")) and now < _expiry(tokens) - 300
 
 
 def _reread_tokens() -> dict | None:
@@ -317,7 +317,7 @@ def _replaced_by_a_later_grant(on_disk: dict, tokens: dict) -> bool:
     Usable is what decides; later guards a clock that steps back during the
     request, which would otherwise make the untouched file look new.
     """
-    baseline = _expiry(tokens) if _filled(tokens.get("access_token")) else 0
+    baseline = _expiry(tokens) if _is_token(tokens.get("access_token")) else 0
     return _expiry(on_disk) > baseline and _usable(on_disk)
 
 
@@ -380,7 +380,7 @@ def _refresh_token() -> str:
         if _usable(tokens):
             return tokens["access_token"]
 
-        if not _filled(tokens.get("refresh_token")):
+        if not _is_token(tokens.get("refresh_token")):
             raise TokenRefused("Token expired and no refresh token. Run: bosch-flow-mcp auth")
 
         # Use whichever client_id was used to obtain the token
@@ -437,16 +437,16 @@ def _refresh_token() -> str:
             new_tokens = {}
         new_access = new_tokens.get("access_token")
         new_refresh = new_tokens.get("refresh_token")
-        access = new_access if _filled(new_access) else ""
+        access = new_access if _is_token(new_access) else ""
         if not access:
             # A 200 is no verdict: the token endpoint refuses with 400 or 401.
             logger.warning("Token refresh answered 200 with no usable token")
-            if not _filled(new_refresh):
+            if not _is_token(new_refresh):
                 raise RefreshNetworkError("Bosch returned no usable token.")
 
         refreshed = {
             "access_token": access,
-            "refresh_token": new_refresh if _filled(new_refresh) else tokens["refresh_token"],
+            "refresh_token": new_refresh if _is_token(new_refresh) else tokens["refresh_token"],
             "expiry": (
                 _expiry_after(new_tokens.get("expires_in", _DEFAULT_LIFETIME)) if access else 0
             ),
@@ -680,7 +680,7 @@ def _exchange_code(client_id: str, code: str, verifier: str, redirect_uri: str) 
         print("Error exchanging code: the response was not readable.", file=sys.stderr)
         sys.exit(1)
 
-    if not isinstance(tokens, dict) or not _filled(tokens.get("access_token")):
+    if not isinstance(tokens, dict) or not _is_token(tokens.get("access_token")):
         # Not the dict. The realistic shape here carries a refresh_token and no
         # access_token, so printing it to explain the failure puts a live
         # credential on the terminal. The isinstance guard is what keeps a JSON
@@ -689,7 +689,7 @@ def _exchange_code(client_id: str, code: str, verifier: str, redirect_uri: str) 
         sys.exit(1)
 
     refresh = tokens.get("refresh_token")
-    refresh = refresh if _filled(refresh) else ""
+    refresh = refresh if _is_token(refresh) else ""
 
     expiry = _expiry_after(tokens.get("expires_in", _DEFAULT_LIFETIME))
     if not expiry and not refresh:
