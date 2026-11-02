@@ -5,7 +5,11 @@ No input to the server exercises this: it is a claim about a fixture in
 """
 
 import json
+import os
+import subprocess
+import sys
 import urllib.request
+from pathlib import Path
 
 import pytest
 
@@ -36,6 +40,43 @@ def test_a_data_request_is_refused_too(monkeypatch):
     monkeypatch.setattr(api, "refresh_token", lambda: "fictional")
     with pytest.raises(pytest.fail.Exception, match="reached the network"):
         api.get("/v1/bike-profile", base=NOTHING_LISTENS)
+
+
+def test_no_fake_token_is_left_behind_by_another_module():
+    """Run alone this proves little, so the suite's order is what it relies on:
+    `tests/test_api.py` runs first and replaces this name for its own tests."""
+    assert api.refresh_token is auth.refresh_token
+
+
+def test_the_default_database_is_the_tests_own(tmp_path):
+    """Read from the environment, not by opening it: without the fixture,
+    `db.get_db()` would open the real database."""
+    assert Path(os.environ["BOSCH_FLOW_MCP_DB_PATH"]).parent == tmp_path
+
+
+def test_the_default_database_wins_over_one_set_in_the_shell(tmp_path):
+    """A developer's shell can name the real database, and a fixture that only
+    filled in a missing value would leave every test using it."""
+    real = tmp_path / "real.db"
+    run = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            "-m",
+            "pytest",
+            "-p",
+            "no:cacheprovider",
+            "-q",
+            f"{__file__}::test_the_default_database_is_the_tests_own",
+        ],
+        cwd=Path(__file__).parents[1],
+        env={**os.environ, "BOSCH_FLOW_MCP_DB_PATH": str(real)},
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert run.returncode == 0, run.stdout
+    assert not real.exists()
 
 
 def test_the_config_turns_an_unhandled_thread_exception_into_an_error(request):

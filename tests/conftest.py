@@ -91,6 +91,7 @@ def _isolate_credentials(tmp_path, monkeypatch):
 
     monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", tmp_path / "_no_tokens.json")
     monkeypatch.setattr(auth_module, "BOSCH_CONFIG_PATH", tmp_path / "_no_config.json")
+    monkeypatch.setenv("BOSCH_FLOW_MCP_DB_PATH", str(tmp_path / "_default.db"))
     # require_auth only checks the file EXISTS (never reads it); point it at a fictional
     # present file so no tool test silently depends on the real token file existing.
     present = tmp_path / "_auth_present.json"

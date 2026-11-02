@@ -17,10 +17,13 @@ from bosch_flow_mcp.api import (
 
 
 @pytest.fixture(autouse=True)
-def patch_refresh_token():
-    """Patch refresh_token to return a fake token in all API tests."""
-    with patch("bosch_flow_mcp.api.refresh_token", return_value="fake_access_token"):
-        yield
+def patch_refresh_token(monkeypatch):
+    """Patch refresh_token to return a fake token in all API tests.
+
+    Through `monkeypatch`, since a test here calls it too: a `patch` exits first
+    and `monkeypatch` then restores the fake, for the rest of the session.
+    """
+    monkeypatch.setattr(api_module, "refresh_token", MagicMock(return_value="fake_access_token"))
 
 
 def _mock_urlopen(response_data: dict):
