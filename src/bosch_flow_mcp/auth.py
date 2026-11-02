@@ -176,7 +176,7 @@ def _load_json(path) -> dict:
     """
     try:
         data = json.loads(path.read_text())
-    except (OSError, ValueError) as e:
+    except (OSError, ValueError, RecursionError) as e:
         raise TokenRefused(f"{path.name} is missing or unreadable. Run: bosch-flow-mcp auth") from e
     if not isinstance(data, dict):
         raise TokenRefused(f"{path.name} is malformed. Run: bosch-flow-mcp auth")
@@ -430,7 +430,7 @@ def _refresh_token() -> str:
 
         try:
             new_tokens = json.loads(raw)
-        except ValueError as e:
+        except (ValueError, RecursionError) as e:
             raise RefreshNetworkError("Bosch returned an unreadable response.") from e
 
         if not isinstance(new_tokens, dict):
@@ -447,7 +447,6 @@ def _refresh_token() -> str:
         refreshed = {
             "access_token": access,
             "refresh_token": new_refresh if _filled(new_refresh) else tokens["refresh_token"],
-            "token_type": new_tokens.get("token_type", "Bearer"),
             "expiry": (
                 _expiry_after(new_tokens.get("expires_in", _DEFAULT_LIFETIME)) if access else 0
             ),
@@ -700,7 +699,6 @@ def _exchange_code(client_id: str, code: str, verifier: str, redirect_uri: str) 
     token_store = {
         "access_token": tokens["access_token"],
         "refresh_token": refresh,
-        "token_type": tokens.get("token_type", "Bearer"),
         "expiry": expiry,
         "client_id": client_id,
     }
