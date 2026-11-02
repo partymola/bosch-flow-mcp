@@ -5,34 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.0] - 2026-11-02
 
 ### Fixed
 
-- A running server now picks up the tokens written by `bosch-flow-mcp auth` without a restart. It read the token file once and kept using that copy. The sync meanwhile routed by the client named in the file. After switching between the standard and the EU Data Act sign-in, requests carried the old client's token to the new client's host and were refused. Once the old token expired, its refresh saved the old sign-in back over the new one.
+- A running server now picks up the tokens written by `bosch-flow-mcp auth` without a restart. It read the token file once and kept using that copy. The sync meanwhile routed by the client named in the file. After switching between the standard and the EU Data Act sign-in, requests carried the old client's token to the new client's host. They were refused. Once the old token expired, its refresh saved the old sign-in back over the new one.
 - A token refresh no longer saves over a grant that `bosch-flow-mcp auth` saved before the refresh finished. The newer grant wins while its access token is still valid.
-- A refused refresh is no longer reported as needing `bosch-flow-mcp auth` when the token file holds a different refresh token by then. The server uses the new token if it is still valid. Otherwise it reports a network error, and the next request refreshes from the file.
+- A refused refresh no longer always asks for `bosch-flow-mcp auth`. If the token file holds a different refresh token by then, the server uses the new token if it is still valid. Otherwise it reports a network error, and the next request refreshes from the file. If the file cannot be read, it reports a network error, and the next request reads the file again.
 - A refreshed token whose save fails is still kept by the running server, and the save is now retried on each request.
-- The token file is replaced in one step rather than emptied and rewritten. Another server reading it while a token was being saved could find it empty or half-written. A save that failed part-way left it that way. A reader now sees the old file or the new one, and a failed save leaves the old one in place. New files are still created owner-only on POSIX, and a symlinked file is saved where the link points. Saving now needs write access to the config directory. A token file mounted into a container on its own, rather than in its directory, cannot be renamed over, so mount the directory.
+- The token file is replaced in one step rather than emptied and rewritten. Another server reading it while a token was being saved could find it empty or half-written. A save that failed part-way left it that way. On POSIX a reader now sees the old file or the new one, and a failed save leaves the old one in place. New files are still created owner-only on POSIX, and a symlinked file is saved where the link points. Saving now needs write access to the config directory. The new file belongs to whoever saved it, so run `bosch-flow-mcp auth` and the server as the same user. A token file mounted into a container on its own, rather than in its directory, cannot be renamed over, so mount the directory.
 - A locked database no longer stops a sync part-way. A failure writing the sync log after a type finished stopped the remaining types. That type now reports its result as usual and the other types run. The sync log keeps showing that type's previous outcome until a later sync records one. The next read syncs the type again unless it already synced today.
 - `bosch-flow-mcp auth` reports a failed exchange when the access token is blank or not valid token text. It printed `Auth complete` and saved that token over the existing file, and every later call was refused. The existing file is now left alone.
 - `bosch-flow-mcp auth` treats an unusable refresh token in the response as missing. It saved that token, and the next refresh was refused. It now saves no refresh token and says to run it again when the access token expires.
+- `bosch-flow-mcp auth` reports a token file it could not save, by the kind of error, and exits. It ended in a traceback.
 - A date tool refuses month `00` as its end date. `2026-00` read as 31 December 2025 and answered with real data for the wrong range.
 - A day count too large to compute, such as `99999999d`, got an unexpected error. So did `0000-12` as an end date. Both now get the accepted formats back. `9999-12` is now accepted as an end date.
 - A token refresh answered 200 with no usable access token is now a network error. It told you to run `bosch-flow-mcp auth`, though such a response says nothing about your credentials. A non-text token was saved and sent. The next request asks again.
 - A token refresh answered with a null, blank or otherwise unusable refresh token keeps the stored one. The unusable token replaced the live one, so the next refresh was refused.
 - A token refresh answered with a refresh token but no usable access token keeps that refresh token. It was dropped, though the one sent may already be spent. The next refresh was then refused. The next request now refreshes from the new token.
 - A token lifetime that is not a finite positive number counts as already expired. A lifetime of `"7200"` or null ended the refresh and lost a good token. In `bosch-flow-mcp auth` it ended in a traceback. An infinite lifetime never refreshed. The tokens are now saved, and every request refreshes while the answers stay like that. With no refresh token to use, `bosch-flow-mcp auth` applies the default lifetime instead.
-- A stored access token that is blank or not valid token text is refreshed rather than sent. A stored refresh token of that kind is reported as missing. A stored expiry that is infinite, or too large for a float, counts as expired. Such a token never refreshed.
-- A date range includes all of its end date. The end date was compared as text against stored timestamps, so every timestamp on that day was left out. A month's battery history lost its last day. `start_date="1d"` returned none of today's snapshots. `bosch_battery_trends` and `bosch_get_software_updates` lost the same day.
+- A stored access token that is blank or not valid token text is now refreshed rather than refused or sent. A stored refresh token of that kind is reported as missing. A stored expiry that is infinite, too large for a float or not a number counts as expired. An infinite or oversized one never refreshed, and text or null failed every request.
+- A date range includes all of its end date. The end date was compared as text against stored timestamps, so every timestamp on that day was left out. A month's battery history lost its last day. `bosch_get_batteries` with `latest_only=False` and `start_date="1d"` returned none of today's snapshots. `bosch_battery_trends` and `bosch_get_software_updates` lost the same day.
 - An end date with no start date now counts back from that end date. The missing start was counted back from today, so an older end date made an empty range. `bosch_battery_trends`, `bosch_get_service_records` and `bosch_get_software_updates` now return everything up to the end date. `bosch_get_activities`, and `bosch_get_batteries` with `latest_only=False`, now start 30 days before the end date.
 - `bosch_battery_trends` says when a date range holds no battery data. It said to run `bosch_sync`, with data in the cache. An empty answer now also says why the last sync failed, as `bosch_get_batteries` does.
 - `bosch-flow-mcp auth` reports a malformed HTTP response or a JSON body nested too deeply to parse. Each ended in a traceback after the authorisation code was spent.
-- A `client_id` that is not text in the token file or the config no longer stops a sync. It raised an unexpected error before the sync started. A null one in the token file was sent to Bosch as `None` on a refresh. A blank one was sent as it stood. The configured client is now used instead.
-- `bosch-flow-mcp auth` stops on a config `client_id` that is neither text nor null, such as `0` or `[]`. It opened a login for the wrong client. A blank `client_id` now runs the standard sign-in. It ran the EU Data Act sign-in with no client.
-- A token file or a refresh answer nested too deeply to parse counts as unreadable. A file that became one during a refresh lost the new refresh token.
+- A `client_id` that is not text in the token file or the config no longer stops a sync. It raised an unexpected error before the sync started. A null one in the token file was sent to Bosch as `None` on a refresh. A blank one was sent as it stood. The configured client is now used instead, or the standard client if the config names none.
+- `bosch-flow-mcp auth` stops on a config `client_id` that is neither text nor null, such as `0` or `[]`. It opened a login for the wrong client. A `client_id` of only spaces now runs the standard sign-in. It ran the EU Data Act sign-in with no client.
+- A token file nested too deeply to parse counts as unreadable.
 - The token file no longer stores `token_type`, because nothing reads it. It was copied from Bosch's answer unchecked.
-- A cached row holding JSON too deep to parse, or a blob that is not valid UTF-8, no longer stops a read or a sync. The row comes back with that value as stored.
+- A cached row holding JSON too deep to parse no longer stops a read or a sync. Nor does a blob that is not valid UTF-8. The row comes back with that value as stored.
+
+### Changed
+
+- `mcp` 2.3.0, up from 2.1.1. `anyio` 4.15.1, up from 4.14.2. `tzdata` 2026.5, up from 2026.3.
 
 ## [0.7.0] - 2026-09-05
 
@@ -163,7 +168,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Live state-of-charge via the ConnectModule mobile API.
 - Pre-commit hook (`scripts/check-no-data.sh`) blocking commit of databases, tokens, and other secrets.
 
-[Unreleased]: https://github.com/partymola/bosch-flow-mcp/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/partymola/bosch-flow-mcp/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/partymola/bosch-flow-mcp/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/partymola/bosch-flow-mcp/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/partymola/bosch-flow-mcp/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/partymola/bosch-flow-mcp/compare/v0.5.0...v0.5.1
