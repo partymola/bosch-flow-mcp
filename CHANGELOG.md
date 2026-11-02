@@ -28,7 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An end date with no start date now counts back from that end date. The missing start was counted back from today, so an older end date made an empty range. `bosch_battery_trends`, `bosch_get_service_records` and `bosch_get_software_updates` now return everything up to the end date. `bosch_get_activities`, and `bosch_get_batteries` with `latest_only=False`, now start 30 days before the end date.
 - `bosch_battery_trends` says when a date range holds no battery data. It said to run `bosch_sync`, with data in the cache.
 - `bosch-flow-mcp auth` reports a malformed HTTP response or a JSON body nested too deeply to parse. Each ended in a traceback after the authorisation code was spent.
-- A `client_id` that is not text in the token file or the config no longer stops a sync. It raised an unexpected error before the sync started. A null one in the token file was sent to Bosch as `None` on a refresh. The configured client is now used instead.
+- A `client_id` that is not text in the token file or the config no longer stops a sync. It raised an unexpected error before the sync started. A null one in the token file was sent to Bosch as `None` on a refresh. A blank one was sent as it stood. The configured client is now used instead.
+- `bosch-flow-mcp auth` stops on a config `client_id` that is not text, such as `0` or `[]`. It opened a login for the wrong client. A blank `client_id` now runs the standard sign-in. It ran the EU Data Act sign-in with no client.
 - A token file or a refresh answer nested too deeply to parse counts as unreadable. A file that became one during a refresh lost the new refresh token.
 - The token file no longer stores `token_type`, because nothing reads it. It was copied from Bosch's answer unchecked.
 

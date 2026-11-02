@@ -189,9 +189,9 @@ def _load_json(path) -> dict:
 
 
 def _named_client(data: dict) -> str:
-    """The client a credential file names, or "" if it names none as text."""
+    """The client a credential file names, or "" if it names none in text that is not blank."""
     cid = data.get("client_id")
-    return cid if isinstance(cid, str) else ""
+    return cid if isinstance(cid, str) and cid.strip() else ""
 
 
 def _get_client_id() -> str:
@@ -218,7 +218,7 @@ def _is_euda() -> bool:
         # send them through a full browser login that quietly yields the wrong
         # client and then looks consistent afterwards.
         cfg = _load_json(BOSCH_CONFIG_PATH)
-        if cfg.get("client_id") and not _named_client(cfg):
+        if not isinstance(cfg.get("client_id"), (str, type(None))):
             raise TokenRefused(f"{BOSCH_CONFIG_PATH.name} is malformed.")
         return bool(_named_client(cfg))
     return False

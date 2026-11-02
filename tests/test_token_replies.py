@@ -5,6 +5,7 @@ import json
 import urllib.error
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
+from urllib.parse import parse_qs
 
 import pytest
 
@@ -144,6 +145,82 @@ class TestOnlyWhatWasCheckedIsSaved:
         assert "Auth complete" in captured.out
         for reply_value in ("REPLY-TEXT", "tok-new", "ref-new"):
             assert reply_value not in captured.out + captured.err
+
+
+EUDA = "euda-00000000-0000-0000-0000-000000000009"
+
+
+class TestAClientThatIsNotNamed:
+    """Blank text names no client, and a config holding anything else but text
+    is malformed. Neither reaches a real listener or browser here."""
+
+    @pytest.fixture
+    def config(self, tmp_path, monkeypatch):
+        path = tmp_path / "bosch_config.json"
+        monkeypatch.setattr(auth_module, "BOSCH_CONFIG_PATH", path)
+        monkeypatch.setattr(auth_module, "CONFIG_DIR", tmp_path)
+        return path
+
+    @pytest.fixture
+    def flows(self, monkeypatch):
+        mobile, euda = MagicMock(), MagicMock()
+        monkeypatch.setattr(auth_module, "_setup_mobile_auth", mobile)
+        monkeypatch.setattr(auth_module, "_setup_euda_auth", euda)
+        return mobile, euda
+
+    @pytest.mark.parametrize("client", [0, False, [], {}, 123, True, ["euda-x"]], ids=repr)
+    def test_a_config_client_that_is_not_text_stops_auth_before_either_flow(
+        self, client, config, flows
+    ):
+        config.write_text(json.dumps({"client_id": client}))
+        with pytest.raises(auth_module.TokenRefused, match="malformed"):
+            auth_module.setup_auth()
+        assert [flow.call_count for flow in flows] == [0, 0]
+
+    @pytest.mark.parametrize("client", [0, False, [], {}, 123, "   ", "\t"], ids=repr)
+    def test_routing_never_raises_on_a_config_client_it_cannot_use(self, client, config):
+        config.write_text(json.dumps({"client_id": client}))
+        assert auth_module.current_client_id() == CLIENT_ID
+        assert auth_module.token_is_euda() is False
+
+    @pytest.mark.parametrize(
+        "contents",
+        [{}, {"client_id": None}, {"client_id": ""}, {"client_id": "   "}],
+        ids=["absent", "null", "empty", "blank"],
+    )
+    def test_a_config_naming_no_client_runs_the_mobile_flow(self, contents, config, flows):
+        config.write_text(json.dumps(contents))
+        auth_module.setup_auth()
+        assert [flow.call_count for flow in flows] == [1, 0]
+
+    def test_a_config_naming_a_client_runs_the_euda_flow(self, config, flows):
+        config.write_text(json.dumps({"client_id": EUDA}))
+        auth_module.setup_auth()
+        assert [flow.call_count for flow in flows] == [0, 1]
+
+    def test_a_blank_client_in_the_token_file_routes_by_the_configured_one(
+        self, config, token_file
+    ):
+        config.write_text(json.dumps({"client_id": EUDA}))
+        token_file.write_text(json.dumps({"client_id": "   "}))
+        assert auth_module.current_client_id() == EUDA
+        assert auth_module.token_is_euda() is True
+
+    def test_a_blank_client_in_the_token_file_is_not_sent_on_a_refresh(self, config, token_file):
+        config.write_text(json.dumps({"client_id": EUDA}))
+        token_file.write_text(
+            json.dumps({"access_token": "a", "refresh_token": "r", "expiry": 0, "client_id": "   "})
+        )
+        sent = []
+
+        def urlopen(request, timeout=None):
+            sent.append(parse_qs(request.data.decode())["client_id"][0])
+            return _answer(GOOD_ANSWER)
+
+        with patch("urllib.request.urlopen", urlopen):
+            auth_module.refresh_token()
+        assert sent == [EUDA]
+        assert json.loads(token_file.read_text())["client_id"] == EUDA
 
 
 class TestResiduesThatStayOpen:
