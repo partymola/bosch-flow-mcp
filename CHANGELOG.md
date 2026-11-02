@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `bosch-flow-mcp auth` stops on a config `client_id` that is not text, such as `0` or `[]`. It opened a login for the wrong client. A blank `client_id` now runs the standard sign-in. It ran the EU Data Act sign-in with no client.
 - A token file or a refresh answer nested too deeply to parse counts as unreadable. A file that became one during a refresh lost the new refresh token.
 - The token file no longer stores `token_type`, because nothing reads it. It was copied from Bosch's answer unchecked.
+- A cached row whose stored JSON is too deep or not valid UTF-8 no longer stops a read or a sync. The row comes back with that value as stored.
 
 ## [0.7.0] - 2026-09-05
 

@@ -344,7 +344,7 @@ def _rows_to_dicts(rows) -> list[dict]:
             if key in d and d[key]:
                 try:
                     d[key] = json.loads(d[key])
-                except (json.JSONDecodeError, TypeError):
+                except (ValueError, TypeError, RecursionError):
                     pass
         result.append(d)
     return result
