@@ -342,11 +342,27 @@ async def test_a_refused_date_costs_no_sync(tool, dates):
     ids=["range", "no-dates"],
 )
 async def test_an_accepted_date_still_syncs_first(tool, dates):
+    """After the query, the sync's data would wait for the next read."""
+    from bosch_flow_mcp import db
+
     module, args = AUTO_SYNCING_TOOLS[tool]
-    with patch(f"bosch_flow_mcp.tools.{module}.auto_sync_if_stale") as auto_sync:
+    events = []
+    open_cache = db.get_db
+
+    def query(*a, **kw):
+        events.append("query")
+        return open_cache(*a, **kw)
+
+    with (
+        patch(
+            f"bosch_flow_mcp.tools.{module}.auto_sync_if_stale",
+            side_effect=lambda _type: events.append("sync"),
+        ),
+        patch.object(db, "get_db", side_effect=query),
+    ):
         data = await _call_tool(tool, **args, **dates)
     assert "error" not in data
-    auto_sync.assert_called_once()
+    assert events == ["sync", "query"]
 
 
 @pytest.mark.parametrize("tool,records", ALL_RECORDS_TOOLS.items(), ids=list(ALL_RECORDS_TOOLS))

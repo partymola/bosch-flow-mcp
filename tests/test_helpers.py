@@ -118,10 +118,17 @@ class TestAnInvertedRange:
             ("2026-03-15", "2026-03-15", date(2026, 3, 15)),
             ("2026-03", "2026-03-01", date(2026, 3, 1)),
             ("2026-03-31", "2026-03", date(2026, 3, 31)),
-            ("0d", None, date.today()),
+            ("0d", None, date(2026, 3, 20)),
         ],
     )
-    def test_a_range_of_one_day_is_not_inverted(self, start, end, day):
+    def test_a_range_of_one_day_is_not_inverted(self, start, end, day, monkeypatch):
+        # A fixed today, so a run crossing midnight cannot move the answer.
+        class Today(date):
+            @classmethod
+            def today(cls):
+                return date(2026, 3, 20)
+
+        monkeypatch.setattr("bosch_flow_mcp.helpers.date", Today)
         assert parse_date(start, end) == (day, day)
 
     def test_a_range_of_one_day_is_not_inverted_across_midnight(self, monkeypatch):
