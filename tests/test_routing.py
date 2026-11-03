@@ -446,8 +446,15 @@ def test_a_standard_sign_in_still_reads_those_answers_as_no_bikes(
 
 @pytest.mark.parametrize(
     "answer",
-    [{}, [], {"bikes": []}, {"data": []}, {"data": {"attributes": {"bikes": []}}}],
-    ids=["empty-body", "list", "bikes", "data", "wrapped"],
+    [
+        {},
+        [],
+        {"bikes": []},
+        {"data": []},
+        {"data": {"attributes": {"bikes": []}}},
+        {"id": "req-1", "bikes": []},
+    ],
+    ids=["empty-body", "list", "bikes", "data", "wrapped", "id-beside-an-empty-list"],
 )
 def test_a_bike_list_with_no_bikes_is_the_trap_however_it_is_shaped(token_as, routed_db, answer):
     token_as("euda-test")
@@ -470,8 +477,34 @@ def test_a_bike_list_with_no_bikes_is_the_trap_however_it_is_shaped(token_as, ro
         {"data": {"bikes": [BIKE]}},
         {"bikes": [], "data": [BIKE]},
         BIKE,
+        {"bikeId": FAKE_BIKE_ID},
+        [{"uuid": "x"}, BIKE, 1, {"id": ""}],
+        {"bikes": [BIKE], "error": None},
+        {"data": [BIKE], "error": {}},
+        {"bikes": [BIKE], "data": "x"},
+        {"bikes": [BIKE], "data": {"attributes": "x"}},
+        [{"id": 5, "bikeId": FAKE_BIKE_ID}],
+        {"id": "  ", "bikeId": FAKE_BIKE_ID},
+        {"bikes": [{"id": FAKE_BIKE_ID, "attributes": "x"}]},
     ],
-    ids=["list", "bikes", "data", "wrapped", "half-wrapped", "empty-bikes-then-data", "single"],
+    ids=[
+        "list",
+        "bikes",
+        "data",
+        "wrapped",
+        "half-wrapped",
+        "empty-bikes-then-data",
+        "single",
+        "single-bike-id",
+        "with-entries-it-cannot-read",
+        "null-error-beside-the-list",
+        "empty-error-beside-the-list",
+        "bad-data-beside-the-list",
+        "bad-attributes-beside-the-list",
+        "bike-id-beside-an-id-that-is-not-text",
+        "bike-id-beside-a-blank-id",
+        "attributes-not-an-object",
+    ],
 )
 def test_every_bike_list_shape_stores_its_bike(token_as, routed_db, client, answer):
     token_as(client)
@@ -485,18 +518,86 @@ def test_every_bike_list_shape_stores_its_bike(token_as, routed_db, client, answ
     assert stored == [FAKE_BIKE_ID]
 
 
+UNREADABLE_BIKE_LISTS = [
+    {"bikes": "nope"},
+    {"data": "nope"},
+    {"data": {"attributes": "nope"}},
+    {"bikes": {}},
+    {"bikes": [1]},
+    {"bikes": [{"uuid": "x"}]},
+    {"bikes": [{"bike_id": "x"}]},
+    {"data": [{"attributes": {"id": "x"}}]},
+    {"bikes": [{"id": 7}]},
+    {"id": None},
+    {"id": ""},
+    {"bikeId": "   "},
+]
+UNREADABLE_BIKE_LIST_IDS = [
+    "bikes-text",
+    "data-text",
+    "attributes-text",
+    "bikes-object",
+    "entry-not-an-object",
+    "entry-with-another-key",
+    "entry-with-snake-key",
+    "id-inside-attributes",
+    "id-not-text",
+    "single-null-id",
+    "single-empty-id",
+    "single-blank-bike-id",
+]
+
+
 @pytest.mark.parametrize("client", ["euda-test", "one-bike-app"])
-@pytest.mark.parametrize(
-    "answer",
-    [{"bikes": "nope"}, {"data": "nope"}, {"data": {"attributes": "nope"}}],
-    ids=["bikes", "data", "attributes"],
-)
-def test_a_bikes_value_that_cannot_be_read_stays_an_error(token_as, routed_db, client, answer):
+@pytest.mark.parametrize("answer", UNREADABLE_BIKE_LISTS, ids=UNREADABLE_BIKE_LIST_IDS)
+def test_a_bike_list_that_cannot_be_read_stays_an_error(token_as, routed_db, client, answer):
     token_as(client)
     with patch("bosch_flow_mcp.tools.sync_tools.api.get", return_value=answer):
         results = sync_tools.run_sync(["bikes"])
 
-    assert results == {"bikes": _error_result("unexpected AttributeError")}
+    assert results == {"bikes": _error_result("BoschAPIError")}
+    assert _last_sync_time(routed_db, "bikes") is None
+
+
+@pytest.mark.parametrize("answer", UNREADABLE_BIKE_LISTS, ids=UNREADABLE_BIKE_LIST_IDS)
+def test_a_bike_list_that_cannot_be_read_is_no_type_s_non_eu_trap(token_as, routed_db, answer):
+    """Read as no bikes, every type would settle and tell the user to delete their config."""
+    token_as("euda-test")
+    with patch(
+        "bosch_flow_mcp.tools.sync_tools.api.get", side_effect=_bike_list_answers([], answer)
+    ):
+        results = sync_tools.run_sync(sync_tools._ALL_TYPES)
+
+    assert results == dict.fromkeys(sync_tools._ALL_TYPES, _error_result("BoschAPIError"))
+    for dtype in sync_tools._ALL_TYPES:
+        assert _last_sync_time(routed_db, dtype) is None
+
+
+@pytest.mark.parametrize(
+    "client,expected",
+    [
+        ("euda-test", _error_result("BoschAPIError")),
+        ("one-bike-app", {"status": "ok", "records": 0}),
+    ],
+    ids=["euda", "standard"],
+)
+@pytest.mark.parametrize(
+    "answer",
+    [{"id": "err-1", "error": "x"}, {"errors": [{"code": "x"}], "id": "trace-1"}],
+    ids=["error", "errors"],
+)
+def test_an_error_answer_carrying_an_id_is_not_stored_as_a_bike(
+    token_as, routed_db, client, expected, answer
+):
+    token_as(client)
+    with patch("bosch_flow_mcp.tools.sync_tools.api.get", return_value=answer):
+        results = sync_tools.run_sync(["bikes"])
+
+    assert results == {"bikes": expected}
+    conn = db.get_db(routed_db)
+    stored = db.query_bikes(conn)
+    conn.close()
+    assert stored == []
 
 
 @pytest.mark.parametrize("dtype", ["batteries", "service", "software_updates"])

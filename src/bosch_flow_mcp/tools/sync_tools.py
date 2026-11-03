@@ -50,24 +50,54 @@ API_FAILED_MSG = "Bosch could not answer this request."
 # ---------------------------------------------------------------------------
 
 
-def _bikes_in(response) -> list | None:
-    """The bikes a bike list answer holds, or None if it is not a bike list at all."""
-    if isinstance(response, list):
-        return response
-    if not isinstance(response, dict):
+UNREADABLE_BIKE_LIST_MSG = "The bike list answer could not be read."
+# Stands for an `attributes` that is not an object: no list, so it raises
+# unless another value holds bikes, and never reads as an empty list.
+_NOT_A_BIKE_LIST = object()
+
+
+def _bike_id(bike) -> str | None:
+    if not isinstance(bike, dict):
         return None
-    data = response.get("data")
-    # v1 mobile API wraps in {"data": {"attributes": {"bikes": [...]}}}
-    if isinstance(data, dict):
-        data = data.get("attributes", data).get("bikes")
-    candidates = (response.get("bikes"), data)
-    for bikes in candidates:
-        if bikes:
-            return bikes
-    # Single bike response - wrap in list
-    if "id" in response or "bikeId" in response:
-        return [response]
-    return [] if not response or any(isinstance(bikes, list) for bikes in candidates) else None
+    for key in ("id", "bikeId"):
+        value = bike.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
+def _bikes_in(response) -> list | None:
+    """The bikes a bike list answer holds, or None if it is not a bike list at all.
+
+    A bike list none of whose entries can be read raises: as no bikes it would
+    read as the non-EU trap, whose remedy is deleting the config.
+    """
+    if isinstance(response, list):
+        bikes = response
+    elif not isinstance(response, dict):
+        return None
+    else:
+        data = response.get("data")
+        # v1 mobile API wraps in {"data": {"attributes": {"bikes": [...]}}}
+        if isinstance(data, dict):
+            attrs = data.get("attributes", data)
+            data = attrs.get("bikes") if isinstance(attrs, dict) else _NOT_A_BIKE_LIST
+        lists = [found for found in (response.get("bikes"), data) if found is not None]
+        bikes = next((found for found in lists if isinstance(found, list) and found), None)
+        if bikes is None:
+            if any(not isinstance(found, list) for found in lists):
+                raise api.BoschAPIError(UNREADABLE_BIKE_LIST_MSG)
+            if response.get("error") or response.get("errors"):
+                return None
+            # Single bike response - wrap in list
+            if not lists and ("id" in response or "bikeId" in response):
+                bikes = [response]
+            else:
+                return [] if not response or lists else None
+    readable = [bike for bike in bikes if _bike_id(bike)]
+    if bikes and not readable:
+        raise api.BoschAPIError(UNREADABLE_BIKE_LIST_MSG)
+    return readable
 
 
 def _sync_bikes(conn, is_euda: bool) -> int:
@@ -91,10 +121,10 @@ def _sync_bikes(conn, is_euda: bool) -> int:
 
     count = 0
     for bike in bikes:
-        bike_id = bike.get("id") or bike.get("bikeId")
-        if not bike_id:
-            continue
-        attrs = bike.get("attributes", bike)  # v1 has attributes wrapper, v2 is flat
+        bike_id = _bike_id(bike)
+        attrs = bike.get("attributes")  # v1 has attributes wrapper, v2 is flat
+        if not isinstance(attrs, dict):
+            attrs = bike
         db.save_bike(
             conn,
             bike_id,
