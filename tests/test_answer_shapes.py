@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from bosch_flow_mcp import db
+from bosch_flow_mcp import auth, db
 from bosch_flow_mcp.tools import sync_tools
 from tests.test_routing import (
     BIKE,
@@ -103,3 +103,17 @@ def test_two_writers_store_an_undated_test_once(tmp_path):
         assert first.execute("SELECT COUNT(*) FROM capacity_tests").fetchone()[0] == 1
     finally:
         first.close()
+
+
+def test_an_os_error_that_is_not_a_dropped_connection_keeps_its_traceback(capsys):
+    server = auth._CallbackServer(
+        ("localhost", 0), auth.BaseHTTPRequestHandler, bind_and_activate=False
+    )
+    try:
+        try:
+            raise FileNotFoundError(2, "No such file")
+        except OSError:
+            server.handle_error(None, ("127.0.0.1", 1))
+    finally:
+        server.server_close()
+    assert "Traceback" in capsys.readouterr().err

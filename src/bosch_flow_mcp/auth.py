@@ -112,6 +112,13 @@ class _CallbackServer(HTTPServer):
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         super().server_bind()
 
+    def handle_error(self, request, client_address):
+        # A connection dropped mid-request is not a bug, and socketserver's
+        # traceback names this install's paths. Anything else keeps it.
+        if isinstance(sys.exc_info()[1], ConnectionError):
+            return
+        super().handle_error(request, client_address)
+
 
 # ---------------------------------------------------------------------------
 # JSON helpers
@@ -549,7 +556,11 @@ def _setup_euda_auth() -> None:
 
     class CallbackHandler(BaseHTTPRequestHandler):
         def do_GET(self):
-            qs = parse_qs(urlparse(self.path).query)
+            try:
+                qs = parse_qs(urlparse(self.path).query)
+            except ValueError:
+                # urlparse refuses a host it cannot read, such as "http://[x".
+                qs = {}
             if "code" in qs:
                 auth_code.append(qs["code"][0])
                 self.send_response(200)

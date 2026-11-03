@@ -3,7 +3,9 @@
 import io
 import json
 import logging
+import socket
 import sqlite3
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -144,6 +146,30 @@ class TestAFailedCommandEndsInOneLine:
         err = self._run("auth", capsys, monkeypatch)
         assert err == "Error: no 'code' parameter found in the URL.\n"
 
+    def test_a_callback_url_that_will_not_parse_is_refused_without_a_traceback(
+        self, capsys, monkeypatch
+    ):
+        self.config.write_text(json.dumps({"client_id": "euda-test"}))
+        monkeypatch.setattr(auth, "EUDA_CALLBACK_PORT", 0)
+        answers = []
+
+        class Listener(auth._CallbackServer):
+            def handle_request(self):
+                def request():
+                    with socket.create_connection(self.server_address[:2], timeout=5) as conn:
+                        conn.sendall(b"GET http://[x HTTP/1.0\r\n\r\n")
+                        answers.append(conn.recv(64))
+
+                sender = threading.Thread(target=request)
+                sender.start()
+                super().handle_request()
+                sender.join(5)
+
+        monkeypatch.setattr(auth, "_CallbackServer", Listener)
+        err = self._run("auth", capsys, monkeypatch)
+        assert err == "Error: no auth code received.\n"
+        assert answers and answers[0].startswith(b"HTTP/1.0 400")
+
     def test_an_interrupted_auth_says_so_and_exits_as_interrupted(self, capsys, monkeypatch):
         with patch("builtins.input", side_effect=KeyboardInterrupt):
             err = self._run("auth", capsys, monkeypatch, exit_code=130)
@@ -192,6 +218,32 @@ class TestAFailedCommandEndsInOneLine:
         with patch.object(cli, "setup_auth", side_effect=bug("a bug")):
             with pytest.raises(bug):
                 cli.main()
+
+
+def _callback_server_handling(failure):
+    server = auth._CallbackServer(
+        ("localhost", 0), auth.BaseHTTPRequestHandler, bind_and_activate=False
+    )
+    try:
+        try:
+            raise failure
+        except Exception:
+            server.handle_error(None, ("127.0.0.1", 1))
+    finally:
+        server.server_close()
+
+
+@pytest.mark.parametrize(
+    "failure", [ConnectionResetError(104, "reset"), BrokenPipeError(32, "broken pipe")]
+)
+def test_a_callback_connection_dropped_mid_request_prints_nothing(failure, capsys):
+    _callback_server_handling(failure)
+    assert capsys.readouterr().err == ""
+
+
+def test_a_bug_in_the_callback_handler_keeps_its_traceback(capsys):
+    _callback_server_handling(KeyError("a bug"))
+    assert "Traceback" in capsys.readouterr().err
 
 
 def test_a_type_that_fails_during_sync_prints_on_stdout_and_exits_0(capsys, monkeypatch):
