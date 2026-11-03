@@ -744,23 +744,21 @@ class TestTheDispatchOrderSatisfiesItsDependencies:
 
     AGENTS.md also declares components before capacity.
 
-    A dict literal is exactly the thing someone tidies alphabetically, and
-    the breach is silent: capacity reads part and serial numbers from the
-    components table, so running it first records zero rows and reports ok
-    - the one failure shape that leaves no diagnostic.
+    A dict literal is exactly the thing someone tidies alphabetically.
+    Capacity reads part and serial numbers from the components table and
+    fetches them itself when it holds no battery, so a breach costs a second
+    registrations request rather than the data.
     """
 
     def _run(self, order, db_name, tmp_path, monkeypatch):
         # The shared mock returns [] for capacity-testers, so under it capacity
-        # records zero in either order and the pair proves nothing. A local
-        # payload is what makes the two halves differ.
+        # records zero in either order.
         def with_capacity(path, base=None, retries=3):
             if "capacity-testers" in path:
                 return [{"testDate": "2026-03-10", "capacity": 90}]
             if "registrations" in path:
                 # The shared fixture's only component is a driveUnit, and
-                # capacity reads battery components - so without one it
-                # records zero in either order and the pair proves nothing.
+                # capacity reads battery components.
                 return {
                     "registrations": [
                         {
@@ -793,18 +791,18 @@ class TestTheDispatchOrderSatisfiesItsDependencies:
         assert results["components"]["records"] >= 1
         assert results["capacity"]["records"] >= 1
 
-    def test_capacity_before_components_finds_nothing(self, tmp_path, monkeypatch):
-        """The failure the declared order prevents, shown rather than asserted."""
+    def test_capacity_before_components_fetches_them_itself(self, tmp_path, monkeypatch):
         results = self._run(
             ["bikes", "capacity", "components"], "reversed.db", tmp_path, monkeypatch
         )
-        assert results["capacity"]["records"] == 0
+        assert results["capacity"]["records"] == 1
+        assert results["components"]["records"] == 1
 
     def test_the_declared_order_holds(self):
-        """So a reorder fails here rather than in a user's empty result."""
+        """So a reorder fails here rather than as repeated requests."""
         from bosch_flow_mcp.tools.sync_tools import _ALL_TYPES
 
-        assert _ALL_TYPES[0] == "bikes", "everything else needs bike ids"
+        assert _ALL_TYPES[0] == "bikes", "the types that need bike ids read what this stores"
         assert _ALL_TYPES.index("components") < _ALL_TYPES.index("capacity"), (
             "capacity reads part and serial numbers written by components"
         )

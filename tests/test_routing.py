@@ -5,6 +5,7 @@ fictional token file (token_as fixture); only api.get (the HTTP boundary) is moc
 and the mock records every (path, base) so tests can assert which API was actually hit.
 """
 
+import json
 import urllib.error
 import urllib.request
 from unittest.mock import MagicMock, patch
@@ -14,6 +15,7 @@ import pytest
 from bosch_flow_mcp import db
 from bosch_flow_mcp.config import (
     BES3_BIKES,
+    BES3_REGISTRATIONS,
     DATA_ACT_API_BASE,
     MOBILE_API_BASE,
     MOBILE_BIKE_PROFILE_LIST,
@@ -166,7 +168,6 @@ def test_euda_data_act_only_runs_on_data_act(token_as, routed_db, dtype):
     token_as("euda-test")
     record = []
     with patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=make_api_mock(record)):
-        # sync bikes/components first so service/capacity have something to iterate
         results = sync_tools.run_sync(["bikes", "components", dtype])
     assert results[dtype]["status"] == "ok"
     assert MOBILE_API_BASE not in _bases_used(record)
@@ -603,6 +604,259 @@ def test_a_standard_sign_in_fetches_the_bike_list_once_and_stays_ok(token_as, ro
 
     assert results[dtype] == {"status": "ok", "records": 0}
     assert _bike_list_requests(record) == [(MOBILE_BIKE_PROFILE_LIST, MOBILE_API_BASE)]
+
+
+# --- A euda token with no battery component cached: components answer for capacity ---
+
+
+def _capacity_mock(record, registrations=None):
+    """make_api_mock with a capacity test to find, and optionally other registrations."""
+    full = make_api_mock(record)
+
+    def _get(path, base=MOBILE_API_BASE, retries=3):
+        answer = full(path, base, retries)
+        if "capacity-testers" in path:
+            return [{"testDate": "2026-03-10"}]
+        if "registrations" in path and registrations is not None:
+            return registrations
+        return answer
+
+    return _get
+
+
+def _requests_to(record, fragment):
+    return [path for path, _ in record if fragment in path]
+
+
+async def test_a_first_capacity_read_on_an_empty_cache_fetches_what_it_needs(token_as, routed_db):
+    from bosch_flow_mcp.tools.battery_tools import bosch_get_capacity
+
+    token_as("euda-test")
+    with patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=_capacity_mock([])):
+        data = json.loads(await bosch_get_capacity())
+
+    assert data["count"] == 1
+    assert data["capacity_tests"][0]["part_number"] == "DA-BATT-1"
+    assert _sync_rows(routed_db) == [("capacity", "ok", "")]
+
+
+@pytest.mark.parametrize("status", FAILED_RESULTS)
+def test_a_failed_components_fetch_is_capacitys_own_unsettled_failure(
+    token_as, routed_db, refuse_every_request, status
+):
+    token_as("euda-test")
+    _seed_a_bike(routed_db)
+    expected, row_status = FAILED_RESULTS[status]
+    requested = refuse_every_request(status)
+
+    results = sync_tools.run_sync(["capacity"])
+
+    assert results == {"capacity": expected}
+    # api.get retries a 401, reading the token file again.
+    registrations = f"{DATA_ACT_API_BASE}{BES3_REGISTRATIONS}"
+    assert requested == [registrations] * (3 if status == 401 else 1)
+    assert _sync_rows(routed_db) == [("capacity", row_status, expected["message"])]
+    assert _last_sync_time(routed_db, "capacity") is None
+
+    requests_made = len(requested)
+    sync_tools.auto_sync_if_stale("capacity")
+    assert len(requested) > requests_made
+
+
+@pytest.mark.parametrize(
+    "status,failure",
+    [
+        (429, sync_tools.api.BoschRateLimitError("x")),
+        (500, sync_tools.api.BoschAPIError("x")),
+        (401, sync_tools.api.BoschAuthError("x")),
+        (403, sync_tools.api.BoschForbiddenError("x")),
+    ],
+    ids=["429", "500", "401", "403"],
+)
+def test_a_full_run_records_a_failed_components_fetch_against_capacity_too(
+    token_as, routed_db, status, failure
+):
+    token_as("euda-test")
+    full = make_api_mock([])
+
+    def get(path, base=MOBILE_API_BASE, retries=3):
+        if "registrations" in path:
+            raise failure
+        return full(path, base, retries)
+
+    with patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=get):
+        results = sync_tools.run_sync(sync_tools._ALL_TYPES)
+
+    assert results["bikes"]["status"] == "ok"
+    assert results["components"] == FAILED_RESULTS[status][0]
+    assert results["capacity"] == FAILED_RESULTS[status][0]
+    assert _last_sync_time(routed_db, "capacity") is None
+
+
+DRIVE_UNIT_ONLY = {
+    "registrations": [
+        {
+            "bikeId": FAKE_BIKE_ID,
+            "components": [
+                {"componentType": "driveUnit", "partNumber": "P1", "serialNumber": "S1"}
+            ],
+        }
+    ]
+}
+
+
+def _seed_components(db_path, *spellings):
+    conn = db.get_db(db_path)
+    for spelling in spellings:
+        db.save_component(conn, FAKE_BIKE_ID, spelling, {"partNumber": "P1", "serialNumber": "S1"})
+    conn.commit()
+    conn.close()
+
+
+def test_a_good_fetch_with_no_battery_component_stays_ok_and_settles(token_as, routed_db):
+    """That is true of a bike whose registrations list its parts."""
+    token_as("euda-test")
+    _seed_a_bike(routed_db)
+    record = []
+    mock = _capacity_mock(record, DRIVE_UNIT_ONLY)
+    with patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=mock):
+        results = sync_tools.run_sync(["capacity"])
+
+    assert results == {"capacity": {"status": "ok", "records": 0}}
+    assert _requests_to(record, "registrations") == [BES3_REGISTRATIONS]
+    assert _requests_to(record, "capacity-testers") == []
+    assert _last_sync_time(routed_db, "capacity") is not None
+
+
+@pytest.mark.parametrize("answer", [None, {"meta": {}}], ids=["404", "unrecognised"])
+def test_a_registrations_answer_that_holds_nothing_reads_the_same(token_as, routed_db, answer):
+    """A residue: this is not true of the bike, and nothing tells it apart."""
+    token_as("euda-test")
+    _seed_a_bike(routed_db)
+    with patch("bosch_flow_mcp.tools.sync_tools.api.get", return_value=answer):
+        results = sync_tools.run_sync(["capacity"])
+
+    assert results == {"capacity": {"status": "ok", "records": 0}}
+
+
+@pytest.mark.parametrize("spelling", ["battery", "Battery", "batteries", "BATTERY", "Batteries"])
+def test_a_cached_battery_means_no_components_request(token_as, routed_db, spelling):
+    token_as("euda-test")
+    _seed_a_bike(routed_db)
+    _seed_components(routed_db, spelling)
+    record = []
+    with patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=_capacity_mock(record)):
+        results = sync_tools.run_sync(["capacity"])
+
+    assert results == {"capacity": {"status": "ok", "records": 1}}
+    assert _requests_to(record, "registrations") == []
+    assert len(_requests_to(record, "partNumber=P1&serialNumber=S1")) == 1
+
+
+def test_one_battery_under_two_spellings_is_asked_about_once(token_as, routed_db):
+    token_as("euda-test")
+    _seed_a_bike(routed_db)
+    _seed_components(routed_db, "battery", "BATTERY")
+    record = []
+    with patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=_capacity_mock(record)):
+        results = sync_tools.run_sync(["capacity"])
+
+    assert results == {"capacity": {"status": "ok", "records": 1}}
+    assert len(_requests_to(record, "capacity-testers")) == 1
+
+
+def test_a_cached_part_that_is_not_a_battery_does_not_stop_the_fetch(token_as, routed_db):
+    token_as("euda-test")
+    _seed_a_bike(routed_db)
+    _seed_components(routed_db, "driveUnit")
+    record = []
+    with patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=_capacity_mock(record)):
+        results = sync_tools.run_sync(["capacity"])
+
+    assert results == {"capacity": {"status": "ok", "records": 1}}
+    assert _requests_to(record, "registrations") == [BES3_REGISTRATIONS]
+
+
+def test_a_battery_registered_in_capitals_reaches_the_tester(token_as, routed_db):
+    token_as("euda-test")
+    _seed_a_bike(routed_db)
+    registrations = {
+        "registrations": [
+            {
+                "bikeId": FAKE_BIKE_ID,
+                "components": [
+                    {"componentType": "BATTERY", "partNumber": "P1", "serialNumber": "S1"}
+                ],
+            }
+        ]
+    }
+    record = []
+    mock = _capacity_mock(record, registrations)
+    with patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=mock):
+        results = sync_tools.run_sync(["capacity"])
+
+    assert results == {"capacity": {"status": "ok", "records": 1}}
+
+
+def test_a_failed_bike_list_does_not_stop_capacity_the_tester_answers(token_as, routed_db):
+    token_as("euda-test")
+    record = []
+    full = _capacity_mock(record)
+
+    def get(path, base=MOBILE_API_BASE, retries=3):
+        answer = full(path, base, retries)
+        if path == BES3_BIKES:
+            raise sync_tools.api.BoschRateLimitError("Rate limited")
+        return answer
+
+    with patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=get):
+        results = sync_tools.run_sync(["capacity"])
+
+    assert results == {"capacity": {"status": "ok", "records": 1}}
+    assert _bike_list_requests(record) == []
+
+
+def test_a_failed_bike_list_is_capacitys_failure_when_the_tester_finds_nothing(token_as, routed_db):
+    token_as("euda-test")
+    record = []
+    mock = _bike_list_answers(
+        record, sync_tools.api.BoschRateLimitError("Rate limited"), empty_bikes=False
+    )
+    with patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=mock):
+        results = sync_tools.run_sync(["capacity"])
+
+    assert results == {"capacity": RATE_LIMITED_RESULT}
+    assert _requests_to(record, "capacity-testers")
+
+
+def test_capacity_after_components_makes_no_second_components_request(token_as, routed_db):
+    token_as("euda-test")
+    record = []
+    with patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=_capacity_mock(record)):
+        results = sync_tools.run_sync(["bikes", "components", "capacity"])
+
+    assert results["capacity"] == {"status": "ok", "records": 1}
+    assert _requests_to(record, "registrations") == [BES3_REGISTRATIONS]
+
+
+@pytest.mark.parametrize(
+    "registrations,registrations_requests,tester_requests",
+    [(None, 1, 1), (DRIVE_UNIT_ONLY, 2, 0)],
+    ids=["battery", "no-battery"],
+)
+def test_a_full_run_on_an_empty_cache_counts_its_requests(
+    token_as, routed_db, registrations, registrations_requests, tester_requests
+):
+    token_as("euda-test")
+    record = []
+    mock = _capacity_mock(record, registrations)
+    with patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=mock):
+        results = sync_tools.run_sync(sync_tools._ALL_TYPES)
+
+    assert all(result["status"] == "ok" for result in results.values())
+    assert _bike_list_requests(record) == [(BES3_BIKES, DATA_ACT_API_BASE)]
+    assert len(_requests_to(record, "registrations")) == registrations_requests
+    assert len(_requests_to(record, "capacity-testers")) == tester_requests
 
 
 # --- Components from the mobile profile ---

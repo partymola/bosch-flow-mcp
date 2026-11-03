@@ -302,12 +302,19 @@ def _sync_software_updates(conn, is_euda: bool = True) -> int:
     return count
 
 
+def _battery_components(conn) -> list[dict]:
+    """Every cached battery, however it is spelled, since Bosch owns these values."""
+    spellings = [t for t in db.component_types(conn) if t.casefold() in ("battery", "batteries")]
+    return db.query_components(conn, bike_id=None, component_type=spellings)
+
+
 def _sync_capacity(conn, is_euda: bool = True) -> int:
     """Fetch battery capacity tester data for all battery components (Data Act only)."""
-    battery_comps = db.query_components(conn, bike_id=None, component_type="battery")
-    # Also try common type names
-    for ctype in ("Battery", "batteries"):
-        battery_comps.extend(db.query_components(conn, bike_id=None, component_type=ctype))
+    battery_comps = _battery_components(conn)
+    if not battery_comps:
+        # With none cached, 0 records would settle as ok even if the components failed.
+        _sync_components(conn, is_euda)
+        battery_comps = _battery_components(conn)
 
     count = 0
     seen = set()
@@ -343,8 +350,8 @@ def _sync_capacity(conn, is_euda: bool = True) -> int:
 # Orchestrator
 # ---------------------------------------------------------------------------
 
-# Order matters: bikes first (others need bike IDs), components before capacity
-# (capacity reads battery part/serial from components).
+# Order saves requests: bikes first, because the types that need bike IDs read what
+# it stores, and components before capacity, which reads battery part/serial from it.
 _SYNC_DISPATCH = {
     "bikes": _sync_bikes,
     "batteries": _sync_batteries,
@@ -534,8 +541,6 @@ async def bosch_sync(data_types: str = "all") -> str:
     """
     types = [t.strip() for t in data_types.split(",")]
     if "all" in types:
-        # Order matters: bikes first (others depend on bike IDs),
-        # components before capacity (capacity needs part/serial from components)
         types = _ALL_TYPES
 
     results = await anyio.to_thread.run_sync(lambda: run_sync(types))
