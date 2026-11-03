@@ -9,6 +9,7 @@ Usage:
 
 import argparse
 import logging
+import sqlite3
 import sys
 from importlib.metadata import version
 
@@ -19,6 +20,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 
+from .auth import TokenRefused, setup_auth  # noqa: E402
 from .mcp_instance import mcp  # noqa: E402
 
 
@@ -64,33 +66,48 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    if args.cmd == "auth":
-        from .auth import setup_auth
+    try:
+        if args.cmd == "auth":
+            setup_auth()
 
-        setup_auth()
+        elif args.cmd == "sync":
+            from .tools.sync_tools import run_sync
 
-    elif args.cmd == "sync":
-        from .tools.sync_tools import run_sync
+            types = [t.strip() for t in args.types.split(",")]
+            if "all" in types:
+                from .tools.sync_tools import _ALL_TYPES
 
-        types = [t.strip() for t in args.types.split(",")]
-        if "all" in types:
-            from .tools.sync_tools import _ALL_TYPES
+                types = _ALL_TYPES
+            print(f"Syncing: {', '.join(types)}")
+            results = run_sync(types)
+            for dtype, result in results.items():
+                status = result.get("status", "?")
+                records = result.get("records", 0)
+                msg = result.get("message", "")
+                if status == "ok":
+                    print(f"  {dtype}: {records} records")
+                else:
+                    print(f"  {dtype}: {status} - {msg}")
 
-            types = _ALL_TYPES
-        print(f"Syncing: {', '.join(types)}")
-        results = run_sync(types)
-        for dtype, result in results.items():
-            status = result.get("status", "?")
-            records = result.get("records", 0)
-            msg = result.get("message", "")
-            if status == "ok":
-                print(f"  {dtype}: {records} records")
-            else:
-                print(f"  {dtype}: {status} - {msg}")
+        else:
+            parser.print_help()
+            sys.exit(1)
 
-    else:
-        parser.print_help()
+    except TokenRefused as e:
+        # This package's own text, naming a file by its base name only.
+        print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
+    except sqlite3.Error as e:
+        # Its text says what is wrong, such as "database is locked", and names no file.
+        print(f"Error: bosch-flow-mcp {args.cmd} failed ({e}).", file=sys.stderr)
+        sys.exit(1)
+    except OSError as e:
+        # The type alone: its text names a path on this machine.
+        print(f"Error: bosch-flow-mcp {args.cmd} failed ({type(e).__name__}).", file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print("Interrupted.", file=sys.stderr)
+        sys.exit(130)
 
 
 if __name__ == "__main__":

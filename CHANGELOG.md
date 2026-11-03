@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A 404 or an answer that is not a bike list is a failure on an EU Data Act sign-in, and the next read tries again. Each read as an empty list, which told you to delete your config for the rest of the UTC day.
 - A bike list wrapped as `{"data": {"attributes": {"bikes": [...]}}}` is read. It ended in an unexpected error.
 - A locked or unreadable database while auto-sync opens the cache no longer stops a read tool before its own query. It answered with an unexpected error even when the lock had cleared.
+- `bosch-flow-mcp auth` reports a failure in one line on stderr and exits 1. So does `bosch-flow-mcp sync` when it fails before any data type runs. A malformed config, a config directory that cannot be created, no input at the prompt, an unparseable pasted URL and a locked or unreadable database each ended in a traceback. That traceback named the install's paths. An interrupt now prints one line and exits 130. A data type that fails during `sync` still prints on stdout, and the command exits 0.
 
 ### Packaging
 

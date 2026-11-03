@@ -213,11 +213,17 @@ def _is_euda() -> bool:
     use, not just what config exists.
     """
     if BOSCH_CONFIG_PATH.exists():
-        # Deliberately unguarded. The only caller is the interactive auth
-        # command, where a malformed config should stop the user rather than
-        # send them through a full browser login that quietly yields the wrong
-        # client and then looks consistent afterwards.
-        cfg = _load_json(BOSCH_CONFIG_PATH)
+        # Deliberately raises. The only caller is the interactive auth command,
+        # where a malformed config should stop the user rather than send them
+        # through a full browser login that quietly yields the wrong client and
+        # then looks consistent afterwards. Not _load_json's text, which sends
+        # the reader to the command that is already failing.
+        try:
+            cfg = _load_json(BOSCH_CONFIG_PATH)
+        except TokenRefused as e:
+            raise TokenRefused(
+                f"{BOSCH_CONFIG_PATH.name} is unreadable or malformed. Fix or remove it."
+            ) from e
         if not isinstance(cfg.get("client_id"), (str, type(None))):
             raise TokenRefused(f"{BOSCH_CONFIG_PATH.name} is malformed.")
         return bool(_named_client(cfg))
@@ -627,9 +633,18 @@ def _setup_mobile_auth() -> None:
     print("        (Right-click > Copy URL in Chrome/Edge, or copy the Location")
     print("        response header in Firefox.)")
     print("\nSTEP 5: Paste the full redirect URL below:")
-    redirect_url = input("> ").strip()
+    try:
+        redirect_url = input("> ").strip()
+    except (EOFError, RuntimeError, UnicodeDecodeError):
+        # No input left, a closed stdin (`auth <&-`), or bytes that will not decode.
+        print("Error: no redirect URL could be read.", file=sys.stderr)
+        sys.exit(1)
 
-    qs = parse_qs(urlparse(redirect_url).query)
+    try:
+        qs = parse_qs(urlparse(redirect_url).query)
+    except ValueError:
+        # urlparse refuses a host it cannot read, such as "http://[x".
+        qs = {}
     if "code" not in qs:
         print("Error: no 'code' parameter found in the URL.", file=sys.stderr)
         sys.exit(1)
