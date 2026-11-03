@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A date range whose start is after its end is refused, naming both dates. It got an empty answer with no explanation. `start_date="30d", end_date="2020-01"` reached it. So does a start date after today with no end date. A refused date now costs no sync.
 - The tools covering all records no longer stop at the year 2000. `bosch_battery_trends`, `bosch_get_service_records` and `bosch_get_software_updates` left out anything older. An end date before 2000 made an empty range.
+- A failed bike list on an EU Data Act sign-in with an empty cache no longer records the other types as `ok` with 0 records. A 429 was enough, and the tools then reported no data for the rest of the UTC day. A type that finds nothing now fetches the list and records its failure as its own, so the next read tries again. Registrations that hold rows do not depend on the list.
+- An EU Data Act sign-in whose bike list is empty reports `empty` with the non-EU explanation for every data type that stored nothing. `service`, `software_updates` and `capacity` recorded `ok` with 0 records. `components` no longer gives that explanation when the bike list failed.
+- A 404 or an answer that is not a bike list is a failure on an EU Data Act sign-in, and the next read tries again. Each read as an empty list, which told you to delete your config for the rest of the UTC day.
+- A bike list wrapped as `{"data": {"attributes": {"bikes": [...]}}}` is read. It ended in an unexpected error.
 
 ### Packaging
 

@@ -567,13 +567,13 @@ class TestASyncLogRowThatCannotBeWritten:
             ["bikes", "service"], tmp_path, monkeypatch, is_euda=True, get=lambda *a, **k: {}
         )
 
-        assert results["bikes"] == {
+        expected = {
             "status": "empty",
             "records": 0,
             "code": "euda_empty",
             "message": sync_tools.EUDA_EMPTY_MSG,
         }
-        assert results["service"] == {"status": "ok", "records": 0}
+        assert results == {"bikes": expected, "service": expected}
 
     def test_the_lost_row_is_logged_by_type_and_not_by_the_exceptions_text(
         self, tmp_path, monkeypatch, caplog
@@ -598,14 +598,33 @@ class TestASyncLogRowThatCannotBeWritten:
             patch.object(
                 st.db,
                 "query_bikes",
-                side_effect=[sqlite3.OperationalError("database is locked"), []],
+                side_effect=[sqlite3.OperationalError("database is locked"), [], [], []],
             ),
         ):
             results = run_sync(["bikes", "service"])
 
         assert results["bikes"]["status"] == "error"
         assert "OperationalError" in results["bikes"]["message"]
-        assert results["service"] == {"status": "ok", "records": 0}
+        assert results["service"]["code"] == "euda_empty"
+
+    def test_a_locked_read_before_fetching_the_bike_list_does_not_end_the_run(
+        self, tmp_path, monkeypatch
+    ):
+        from bosch_flow_mcp.tools import sync_tools as st
+
+        monkeypatch.setenv("BOSCH_FLOW_MCP_DB_PATH", str(tmp_path / "test.db"))
+        with (
+            patch.object(st.api, "get", return_value={}),
+            patch.object(st.auth, "token_is_euda", return_value=True),
+            patch.object(
+                st.db, "query_bikes", side_effect=sqlite3.OperationalError("database is locked")
+            ),
+        ):
+            results = run_sync(["service", "components"])
+
+        for dtype in ("service", "components"):
+            assert results[dtype]["status"] == "error"
+            assert "OperationalError" in results[dtype]["message"]
 
     def test_each_outcome_still_writes_its_row(self, tmp_path, monkeypatch):
         """The guard must not lose the rows auto-sync and empty_data_note read."""

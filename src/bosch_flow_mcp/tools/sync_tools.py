@@ -27,10 +27,6 @@ logger = logging.getLogger(__name__)
 # has no equivalent endpoint, so these are skipped (not silently 0) on that client.
 DATA_ACT_ONLY = frozenset({"service", "software_updates", "capacity"})
 
-# Types derived from the bike list. If a euda token returns no bikes (the non-EU
-# trap), every one of these is empty too, so all three carry the euda_empty signal.
-_BIKE_DERIVED = frozenset({"bikes", "batteries", "components"})
-
 REQUIRES_EUDA_MSG = (
     "Requires the EU Data Act API. Register a euda client at "
     "portal.bosch-ebike.com/data-act; not available with the standard app sign-in."
@@ -54,6 +50,26 @@ API_FAILED_MSG = "Bosch could not answer this request."
 # ---------------------------------------------------------------------------
 
 
+def _bikes_in(response) -> list | None:
+    """The bikes a bike list answer holds, or None if it is not a bike list at all."""
+    if isinstance(response, list):
+        return response
+    if not isinstance(response, dict):
+        return None
+    data = response.get("data")
+    # v1 mobile API wraps in {"data": {"attributes": {"bikes": [...]}}}
+    if isinstance(data, dict):
+        data = data.get("attributes", data).get("bikes")
+    candidates = (response.get("bikes"), data)
+    for bikes in candidates:
+        if bikes:
+            return bikes
+    # Single bike response - wrap in list
+    if "id" in response or "bikeId" in response:
+        return [response]
+    return [] if not response or any(isinstance(bikes, list) for bikes in candidates) else None
+
+
 def _sync_bikes(conn, is_euda: bool) -> int:
     """Fetch all bikes from the API matching the active client.
 
@@ -64,25 +80,14 @@ def _sync_bikes(conn, is_euda: bool) -> int:
         response = api.get(BES3_BIKES, base=DATA_ACT_API_BASE)
     else:
         response = api.get(MOBILE_BIKE_PROFILE_LIST)
-    if not response:
-        return 0
 
-    # Handle various response shapes
-    if isinstance(response, list):
-        bikes = response
-    elif isinstance(response, dict):
-        bikes = response.get("bikes", []) or response.get("data", [])
-        # v1 mobile API wraps in {"data": {"attributes": {"bikes": [...]}}}
-        if not bikes:
-            attrs = response.get("data", {})
-            if isinstance(attrs, dict):
-                attrs = attrs.get("attributes", attrs)
-                bikes = attrs.get("bikes", [])
-        # Single bike response - wrap in list
-        if not bikes and ("id" in response or "bikeId" in response):
-            bikes = [response]
-    else:
-        bikes = []
+    bikes = _bikes_in(response)
+    if bikes is None:
+        # api.get gives None for a 404 and {} for an empty body. On a euda token no
+        # bikes reads as the non-EU trap, whose remedy is deleting the config.
+        if is_euda:
+            raise api.BoschAPIError("The bike list answer was not a bike list.")
+        return 0
 
     count = 0
     for bike in bikes:
@@ -419,14 +424,17 @@ def run_sync(data_types: list[str]) -> dict:
                 }
                 continue
 
-            # A euda token with no bikes is the non-EU trap: surface it for bikes AND
-            # everything derived from them (batteries/components), so calling a derived
-            # tool first still explains the empty result instead of a bare ok/0.
             try:
+                # These ask per bike, and would settle as ok with none even if the list failed.
+                if dtype in ("service", "software_updates") and not db.query_bikes(conn):
+                    _sync_bikes(conn, is_euda)
                 count = sync_fn(conn, is_euda)
-                euda_empty = (
-                    count == 0 and is_euda and dtype in _BIKE_DERIVED and not db.query_bikes(conn)
-                )
+                # A euda token with no bikes is the non-EU trap, whichever tool asked first.
+                euda_empty = count == 0 and is_euda and not db.query_bikes(conn)
+                # These do not need the list, so only now can it say why they found nothing.
+                if euda_empty and dtype in ("components", "capacity"):
+                    _sync_bikes(conn, is_euda)
+                    euda_empty = not db.query_bikes(conn)
             except api.BoschAuthError:
                 # A dead token is the failure that will not clear itself, so
                 # it is the one worth finding later.

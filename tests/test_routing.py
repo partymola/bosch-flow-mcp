@@ -5,7 +5,9 @@ fictional token file (token_as fixture); only api.get (the HTTP boundary) is moc
 and the mock records every (path, base) so tests can assert which API was actually hit.
 """
 
-from unittest.mock import patch
+import urllib.error
+import urllib.request
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -208,6 +210,399 @@ def test_one_bike_app_empty_bikes_is_plain_ok(token_as, routed_db):
     assert results["bikes"]["status"] == "ok"
     assert results["bikes"]["records"] == 0
     assert "code" not in results["bikes"]
+
+
+# --- A euda token with no bikes cached: the bike list answers for every type ---
+
+
+NOT_BIKES = [dtype for dtype in sync_tools._ALL_TYPES if dtype != "bikes"]
+EUDA_EMPTY_RESULT = {
+    "status": "empty",
+    "records": 0,
+    "code": "euda_empty",
+    "message": sync_tools.EUDA_EMPTY_MSG,
+}
+RATE_LIMITED_RESULT = {
+    "status": "rate_limited",
+    "records": 0,
+    "code": "rate_limited",
+    "message": sync_tools.RATE_LIMITED_MSG,
+}
+
+
+def _error_result(kind):
+    return {
+        "status": "error",
+        "records": 0,
+        "code": "error",
+        "message": f"{sync_tools.API_FAILED_MSG} ({kind})",
+    }
+
+
+# HTTP status -> (per-type result, sync_log status)
+FAILED_RESULTS = {
+    429: (RATE_LIMITED_RESULT, "error"),
+    500: (_error_result("BoschAPIError"), "error"),
+    401: (
+        {
+            "status": "auth_error",
+            "records": 0,
+            "code": "auth",
+            "message": sync_tools.AUTH_FAILED_MSG,
+        },
+        "auth_error",
+    ),
+    403: (_error_result("BoschForbiddenError"), "error"),
+}
+BIKE = {"id": FAKE_BIKE_ID, "brandName": "TestBrand"}
+
+
+@pytest.fixture
+def refuse_every_request(monkeypatch):
+    """Answer every request with an HTTP status, through the real api.get."""
+
+    def _refuse(status):
+        requested = []
+
+        def urlopen(req, timeout=None):
+            requested.append(req.full_url)
+            raise urllib.error.HTTPError(req.full_url, status, "refused", {}, None)
+
+        monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+        return requested
+
+    return _refuse
+
+
+def _sync_rows(db_path):
+    conn = db.get_db(db_path)
+    rows = conn.execute("SELECT data_type, status, notes FROM sync_log ORDER BY id").fetchall()
+    conn.close()
+    return [tuple(row) for row in rows]
+
+
+def _last_sync_time(db_path, dtype):
+    conn = db.get_db(db_path)
+    last_sync = db.get_last_sync_time(conn, dtype)
+    conn.close()
+    return last_sync
+
+
+def _seed_a_bike(db_path):
+    conn = db.get_db(db_path)
+    db.save_bike(conn, FAKE_BIKE_ID, {"name": "Seeded"})
+    conn.commit()
+    conn.close()
+
+
+def _bike_list_requests(record):
+    return [call for call in record if call[0] in (BES3_BIKES, MOBILE_BIKE_PROFILE_LIST)]
+
+
+def _bike_list_answers(record, answer, *, empty_bikes=True):
+    """make_api_mock, with this answer or exception from the Data Act bike list."""
+    full = make_api_mock(record, empty_bikes=empty_bikes)
+
+    def _get(path, base=MOBILE_API_BASE, retries=3):
+        served = full(path, base, retries)
+        if path != BES3_BIKES:
+            return served
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    return _get
+
+
+@pytest.mark.parametrize("status", FAILED_RESULTS)
+def test_a_failed_bike_list_is_each_types_own_unsettled_failure(
+    token_as, routed_db, refuse_every_request, status
+):
+    token_as("euda-test")
+    expected, row_status = FAILED_RESULTS[status]
+    requested = refuse_every_request(status)
+
+    results = sync_tools.run_sync(sync_tools._ALL_TYPES)
+
+    assert results == dict.fromkeys(sync_tools._ALL_TYPES, expected)
+    assert _sync_rows(routed_db) == [
+        (dtype, row_status, expected["message"]) for dtype in sync_tools._ALL_TYPES
+    ]
+    for dtype in sync_tools._ALL_TYPES:
+        assert _last_sync_time(routed_db, dtype) is None
+    # api.get retries a 401, reading the token file again.
+    assert len(requested) == len(sync_tools._ALL_TYPES) * (3 if status == 401 else 1)
+
+
+def test_a_bike_list_that_will_not_parse_is_each_types_own_unsettled_failure(
+    token_as, routed_db, monkeypatch
+):
+    token_as("euda-test")
+    response = MagicMock()
+    response.__enter__.return_value.read.return_value = b"<html>not json</html>"
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *_args, **_kwargs: response)
+
+    results = sync_tools.run_sync(sync_tools._ALL_TYPES)
+
+    expected = _error_result("unexpected JSONDecodeError")
+    assert results == dict.fromkeys(sync_tools._ALL_TYPES, expected)
+    for dtype in sync_tools._ALL_TYPES:
+        assert _last_sync_time(routed_db, dtype) is None
+
+
+def test_a_failed_bike_list_does_not_stop_components_the_registrations_answer(token_as, routed_db):
+    """Registrations carry their own bike ids."""
+    token_as("euda-test")
+    record = []
+    mock = _bike_list_answers(
+        record, sync_tools.api.BoschRateLimitError("Rate limited"), empty_bikes=False
+    )
+    with patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=mock):
+        results = sync_tools.run_sync(["components"])
+
+    assert results == {"components": {"status": "ok", "records": 2}}
+    conn = db.get_db(routed_db)
+    stored = db.query_components(conn, FAKE_BIKE_ID, None)
+    conn.close()
+    assert len(stored) == 2
+    assert _bike_list_requests(record) == []
+
+
+@pytest.mark.parametrize("dtype", ["components", "capacity"])
+def test_a_failed_bike_list_is_the_failure_when_nothing_else_answers(token_as, routed_db, dtype):
+    """Only the list can say why there is nothing, so it is asked once there is nothing."""
+    token_as("euda-test")
+    record = []
+    mock = _bike_list_answers(record, sync_tools.api.BoschRateLimitError("Rate limited"))
+    with patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=mock):
+        sync_tools.auto_sync_if_stale(dtype)
+        assert _sync_rows(routed_db) == [(dtype, "error", sync_tools.RATE_LIMITED_MSG)]
+        assert _last_sync_time(routed_db, dtype) is None
+        assert _bike_list_requests(record) == [(BES3_BIKES, DATA_ACT_API_BASE)]
+
+        sync_tools.auto_sync_if_stale(dtype)
+        assert len(_bike_list_requests(record)) == 2
+
+
+@pytest.mark.parametrize("dtype", ["components", "capacity"])
+def test_a_good_bike_list_leaves_nothing_found_as_ok(token_as, routed_db, dtype):
+    """The account has bikes, so this is not the trap."""
+    token_as("euda-test")
+    mock = _bike_list_answers([], {"bikes": [BIKE]})
+    with patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=mock):
+        results = sync_tools.run_sync([dtype])
+
+    assert results == {dtype: {"status": "ok", "records": 0}}
+
+
+NOT_A_BIKE_LIST = [None, {"meta": {"count": 0}}, {"error": "nope"}, {"bikes": None}, "nope"]
+NOT_A_BIKE_LIST_IDS = ["404", "meta", "error", "null-bikes", "text"]
+
+
+@pytest.mark.parametrize("answer", NOT_A_BIKE_LIST, ids=NOT_A_BIKE_LIST_IDS)
+def test_a_bike_list_answer_that_is_not_a_list_is_a_failure_on_a_euda_token(
+    token_as, routed_db, answer
+):
+    """Read as the non-EU trap, it would settle and tell the user to delete their config."""
+    token_as("euda-test")
+    with patch(
+        "bosch_flow_mcp.tools.sync_tools.api.get", side_effect=_bike_list_answers([], answer)
+    ):
+        results = sync_tools.run_sync(sync_tools._ALL_TYPES)
+
+    assert results == dict.fromkeys(sync_tools._ALL_TYPES, _error_result("BoschAPIError"))
+    for dtype in sync_tools._ALL_TYPES:
+        assert _last_sync_time(routed_db, dtype) is None
+
+
+def test_a_real_404_from_the_bike_list_is_a_failure_on_a_euda_token(
+    token_as, routed_db, refuse_every_request
+):
+    token_as("euda-test")
+    refuse_every_request(404)
+
+    results = sync_tools.run_sync(["bikes", "service"])
+
+    expected = _error_result("BoschAPIError")
+    assert results == {"bikes": expected, "service": expected}
+
+
+@pytest.mark.parametrize("answer", NOT_A_BIKE_LIST, ids=NOT_A_BIKE_LIST_IDS)
+@pytest.mark.parametrize("dtype", ["bikes", "batteries", "components"])
+def test_a_standard_sign_in_still_reads_those_answers_as_no_bikes(
+    token_as, routed_db, dtype, answer
+):
+    token_as("one-bike-app")
+
+    def get(path, base=MOBILE_API_BASE, retries=3):
+        return answer if path == MOBILE_BIKE_PROFILE_LIST else {}
+
+    with patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=get):
+        results = sync_tools.run_sync([dtype])
+
+    assert results == {dtype: {"status": "ok", "records": 0}}
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [{}, [], {"bikes": []}, {"data": []}, {"data": {"attributes": {"bikes": []}}}],
+    ids=["empty-body", "list", "bikes", "data", "wrapped"],
+)
+def test_a_bike_list_with_no_bikes_is_the_trap_however_it_is_shaped(token_as, routed_db, answer):
+    token_as("euda-test")
+    with patch(
+        "bosch_flow_mcp.tools.sync_tools.api.get", side_effect=_bike_list_answers([], answer)
+    ):
+        results = sync_tools.run_sync(sync_tools._ALL_TYPES)
+
+    assert results == dict.fromkeys(sync_tools._ALL_TYPES, EUDA_EMPTY_RESULT)
+
+
+@pytest.mark.parametrize("client", ["euda-test", "one-bike-app"])
+@pytest.mark.parametrize(
+    "answer",
+    [
+        [BIKE],
+        {"bikes": [BIKE]},
+        {"data": [BIKE]},
+        {"data": {"attributes": {"bikes": [BIKE]}}},
+        {"data": {"bikes": [BIKE]}},
+        {"bikes": [], "data": [BIKE]},
+        BIKE,
+    ],
+    ids=["list", "bikes", "data", "wrapped", "half-wrapped", "empty-bikes-then-data", "single"],
+)
+def test_every_bike_list_shape_stores_its_bike(token_as, routed_db, client, answer):
+    token_as(client)
+    with patch("bosch_flow_mcp.tools.sync_tools.api.get", return_value=answer):
+        results = sync_tools.run_sync(["bikes"])
+
+    assert results == {"bikes": {"status": "ok", "records": 1}}
+    conn = db.get_db(routed_db)
+    stored = [bike["bike_id"] for bike in db.query_bikes(conn)]
+    conn.close()
+    assert stored == [FAKE_BIKE_ID]
+
+
+@pytest.mark.parametrize("client", ["euda-test", "one-bike-app"])
+@pytest.mark.parametrize(
+    "answer",
+    [{"bikes": "nope"}, {"data": "nope"}, {"data": {"attributes": "nope"}}],
+    ids=["bikes", "data", "attributes"],
+)
+def test_a_bikes_value_that_cannot_be_read_stays_an_error(token_as, routed_db, client, answer):
+    token_as(client)
+    with patch("bosch_flow_mcp.tools.sync_tools.api.get", return_value=answer):
+        results = sync_tools.run_sync(["bikes"])
+
+    assert results == {"bikes": _error_result("unexpected AttributeError")}
+
+
+@pytest.mark.parametrize("dtype", ["batteries", "service", "software_updates"])
+def test_a_read_alone_retries_after_a_failed_bike_list(
+    token_as, routed_db, refuse_every_request, dtype
+):
+    """Nothing else fetches the list on this route, and a settled row would last the UTC day."""
+    token_as("euda-test")
+    requested = refuse_every_request(429)
+
+    sync_tools.auto_sync_if_stale(dtype)
+
+    assert _sync_rows(routed_db) == [(dtype, "error", sync_tools.RATE_LIMITED_MSG)]
+    assert _last_sync_time(routed_db, dtype) is None
+    assert requested == [f"{DATA_ACT_API_BASE}{BES3_BIKES}"]
+
+    sync_tools.auto_sync_if_stale(dtype)
+    assert len(requested) == 2
+
+    with patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=make_api_mock([])):
+        sync_tools.auto_sync_if_stale(dtype)
+    assert _sync_rows(routed_db)[-1] == (dtype, "ok", "")
+    assert _last_sync_time(routed_db, dtype) is not None
+
+
+def test_an_empty_bike_list_is_euda_empty_for_every_type(token_as, routed_db):
+    token_as("euda-test")
+    mock = make_api_mock([], empty_bikes=True)
+    with patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=mock):
+        results = sync_tools.run_sync(sync_tools._ALL_TYPES)
+
+    assert results == dict.fromkeys(sync_tools._ALL_TYPES, EUDA_EMPTY_RESULT)
+    assert _sync_rows(routed_db) == [
+        (dtype, "empty", sync_tools.EUDA_EMPTY_MSG) for dtype in sync_tools._ALL_TYPES
+    ]
+
+
+@pytest.mark.parametrize("dtype", NOT_BIKES)
+def test_a_read_alone_settles_on_an_empty_bike_list(token_as, routed_db, dtype):
+    """A 200 with no bikes will say the same for the rest of the day."""
+    token_as("euda-test")
+    record = []
+    mock = make_api_mock(record, empty_bikes=True)
+    with patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=mock):
+        sync_tools.auto_sync_if_stale(dtype)
+        assert _sync_rows(routed_db) == [(dtype, "empty", sync_tools.EUDA_EMPTY_MSG)]
+        assert _bike_list_requests(record) == [(BES3_BIKES, DATA_ACT_API_BASE)]
+        requests_made = len(record)
+        sync_tools.auto_sync_if_stale(dtype)
+    assert len(record) == requests_made
+
+
+def test_a_type_that_stored_records_is_not_euda_empty(token_as, routed_db):
+    """Registrations carry their own bike ids, so they can answer while the bike list is empty."""
+    token_as("euda-test")
+    record = []
+    mock = _bike_list_answers(record, {"bikes": []}, empty_bikes=False)
+    with patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=mock):
+        results = sync_tools.run_sync(["components"])
+
+    assert results["components"] == {"status": "ok", "records": 2}
+    assert _bike_list_requests(record) == []
+
+
+@pytest.mark.parametrize("dtype", ["service", "software_updates"])
+def test_a_type_alone_reads_the_bikes_the_list_just_returned(token_as, routed_db, dtype):
+    token_as("euda-test")
+    record = []
+    with patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=make_api_mock(record)):
+        results = sync_tools.run_sync([dtype])
+
+    assert results[dtype] == {"status": "ok", "records": 0}
+    assert [path for path, _ in record if f"bikeId={FAKE_BIKE_ID}" in path]
+
+
+@pytest.mark.parametrize("dtype", NOT_BIKES)
+def test_a_cached_bike_means_no_bike_list_request(token_as, routed_db, dtype):
+    token_as("euda-test")
+    _seed_a_bike(routed_db)
+    record = []
+    with patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=make_api_mock(record)):
+        results = sync_tools.run_sync([dtype])
+
+    assert results[dtype]["status"] == "ok"
+    assert _bike_list_requests(record) == []
+
+
+@pytest.mark.parametrize("types", [["bikes"], ["bikes", "service"]], ids=["alone", "then-service"])
+def test_the_bikes_type_fetches_the_list_once(token_as, routed_db, types):
+    token_as("euda-test")
+    record = []
+    with patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=make_api_mock(record)):
+        sync_tools.run_sync(types)
+    assert _bike_list_requests(record) == [(BES3_BIKES, DATA_ACT_API_BASE)]
+
+
+@pytest.mark.parametrize("dtype", ["batteries", "components"])
+def test_a_standard_sign_in_fetches_the_bike_list_once_and_stays_ok(token_as, routed_db, dtype):
+    """Only a euda token has the non-EU trap to report."""
+    token_as("one-bike-app")
+    record = []
+    mock = make_api_mock(record, empty_bikes=True)
+    with patch("bosch_flow_mcp.tools.sync_tools.api.get", side_effect=mock):
+        results = sync_tools.run_sync([dtype])
+
+    assert results[dtype] == {"status": "ok", "records": 0}
+    assert _bike_list_requests(record) == [(MOBILE_BIKE_PROFILE_LIST, MOBILE_API_BASE)]
 
 
 # --- Components from the mobile profile ---
