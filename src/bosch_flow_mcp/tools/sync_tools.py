@@ -458,7 +458,7 @@ def run_sync(data_types: list[str]) -> dict:
     token uses the EU Data Act API, the one-bike-app token uses the mobile app API.
     Per-type result: {"status", "records"} always, plus {"code", "message"} when not
     "ok". Statuses: ok | empty (euda non-EU trap) | unavailable (Data-Act-only on the
-    app client) | error | auth_error - never a silent 0.
+    app client) | error | auth_error | rate_limited - never a silent 0.
     """
     conn = db.get_db()
     results: dict[str, dict] = {}
@@ -592,8 +592,8 @@ async def bosch_sync(data_types: str = "all") -> str:
             "components", "service", "software_updates", "capacity".
             Comma-separated for multiple, e.g. "bikes,batteries". Default: "all".
 
-    Returns a per-type summary: status (ok/empty/unavailable/error), record count,
-    and a message explaining any non-ok result.
+    Returns a per-type summary: status (ok/empty/unavailable/error/auth_error/
+    rate_limited), record count, and a message explaining any non-ok result.
     """
     types = [t.strip() for t in data_types.split(",")]
     if "all" in types:
