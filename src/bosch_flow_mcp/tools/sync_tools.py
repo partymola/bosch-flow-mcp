@@ -336,7 +336,10 @@ def _sync_capacity(conn, is_euda: bool = True) -> int:
             continue
         tests = response if isinstance(response, list) else response.get("capacityTests", [])
         if not tests and isinstance(response, dict):
-            tests = response.get("data", [response])
+            tests = response.get("data", [])
+            # One test only if it has a date: a NULL date defeats the UNIQUE key.
+            if not tests and (response.get("testDate") or response.get("date")):
+                tests = [response]
         for test in tests:
             test_date = test.get("testDate") or test.get("date")
             db.save_capacity_test(conn, part, serial, test_date, test)

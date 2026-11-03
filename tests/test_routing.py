@@ -859,6 +859,49 @@ def test_a_full_run_on_an_empty_cache_counts_its_requests(
     assert len(_requests_to(record, "capacity-testers")) == tester_requests
 
 
+def _sync_capacity_twice(db_path, answer):
+    """Two runs, because a NULL test date defeats the UNIQUE key and grows per sync."""
+    _seed_a_bike(db_path)
+    _seed_components(db_path, "battery")
+    with patch("bosch_flow_mcp.tools.sync_tools.api.get", return_value=answer):
+        first = sync_tools.run_sync(["capacity"])
+        sync_tools.run_sync(["capacity"])
+    conn = db.get_db(db_path)
+    dates = [row[0] for row in conn.execute("SELECT test_date FROM capacity_tests")]
+    conn.close()
+    return first, dates
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [{"capacityTests": []}, {"data": []}, {"meta": {"count": 0}}],
+    ids=["capacity-tests", "data", "unrecognised"],
+)
+def test_a_tester_answer_holding_no_test_stores_nothing(token_as, routed_db, answer):
+    token_as("euda-test")
+    first, dates = _sync_capacity_twice(routed_db, answer)
+    assert first == {"capacity": {"status": "ok", "records": 0}}
+    assert dates == []
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        {"testDate": "2026-03-10", "capacity": 90},
+        {"date": "2026-03-10"},
+        {"capacityTests": [{"testDate": "2026-03-10"}]},
+        {"data": [{"testDate": "2026-03-10"}]},
+        [{"testDate": "2026-03-10"}],
+    ],
+    ids=["bare-test-date", "bare-date", "capacity-tests", "data", "list"],
+)
+def test_a_tester_answer_holding_a_test_stores_it_once(token_as, routed_db, answer):
+    token_as("euda-test")
+    first, dates = _sync_capacity_twice(routed_db, answer)
+    assert first == {"capacity": {"status": "ok", "records": 1}}
+    assert dates == ["2026-03-10"]
+
+
 # --- Components from the mobile profile ---
 
 
