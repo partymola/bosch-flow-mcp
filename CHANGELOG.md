@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A date range whose start is after its end is refused, naming both dates. It got an empty answer with no explanation. `start_date="30d", end_date="2020-01"` reached it. So does a start date after today with no end date. A refused date now costs no sync.
+- The tools covering all records no longer stop at the year 2000. `bosch_battery_trends`, `bosch_get_service_records` and `bosch_get_software_updates` left out anything older. An end date before 2000 made an empty range.
+
 ### Packaging
 
 - The container image is built on Python 3.15 instead of 3.14. Python 3.15 joins the CI matrix and the supported-version classifiers. `requires-python` is unchanged at `>=3.13`.

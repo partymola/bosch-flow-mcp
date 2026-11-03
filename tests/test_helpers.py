@@ -6,7 +6,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from bosch_flow_mcp.helpers import format_response, parse_date
+from bosch_flow_mcp.helpers import EARLIEST_DATE, InvalidDateError, format_response, parse_date
 
 
 def test_format_response_dict():
@@ -74,6 +74,74 @@ def test_parse_date_invalid_raises():
 def test_parse_date_december_month_end():
     start, end = parse_date("2026-12", "2026-12")
     assert end == date(2026, 12, 31)
+
+
+class TestAnInvertedRange:
+    """An empty answer reads as no data, when the dates were out of order."""
+
+    @pytest.mark.parametrize(
+        "start,end,named_start,named_end",
+        [
+            ("2026-03-31", "2026-03-01", "2026-03-31", "2026-03-01"),
+            ("2026-04", "2026-03", "2026-04-01", "2026-03-31"),
+            ("2026-03-02", "2026-03-01", "2026-03-02", "2026-03-01"),
+        ],
+    )
+    def test_it_is_refused_naming_both_dates(self, start, end, named_start, named_end):
+        with pytest.raises(InvalidDateError) as exc_info:
+            parse_date(start, end)
+        assert str(exc_info.value) == (
+            f"Start date {named_start} is after end date {named_end}. "
+            "Use a start on or before that date."
+        )
+
+    def test_a_day_count_is_named_as_the_date_it_comes_to(self):
+        with pytest.raises(InvalidDateError) as exc_info:
+            parse_date("30d", "2020-01")
+        counted = (date.today() - timedelta(days=30)).isoformat()
+        assert str(exc_info.value) == (
+            f"Start date {counted} is after end date 2020-01-31. "
+            "Use a start on or before that date."
+        )
+
+    def test_a_start_after_today_with_no_end_names_today_as_what_it_is(self):
+        with pytest.raises(InvalidDateError) as exc_info:
+            parse_date("2999-01-01")
+        assert str(exc_info.value) == (
+            f"Start date 2999-01-01 is after today ({date.today().isoformat()}). "
+            "Use a start on or before that date."
+        )
+
+    @pytest.mark.parametrize(
+        "start,end,day",
+        [
+            ("2026-03-15", "2026-03-15", date(2026, 3, 15)),
+            ("2026-03", "2026-03-01", date(2026, 3, 1)),
+            ("2026-03-31", "2026-03", date(2026, 3, 31)),
+            ("0d", None, date.today()),
+        ],
+    )
+    def test_a_range_of_one_day_is_not_inverted(self, start, end, day):
+        assert parse_date(start, end) == (day, day)
+
+    def test_a_range_of_one_day_is_not_inverted_across_midnight(self, monkeypatch):
+        """Read twice, `0d` lands after the end date it defaults to."""
+        days = iter([date(2026, 3, 31), date(2026, 4, 1)])
+
+        class Midnight(date):
+            @classmethod
+            def today(cls):
+                return next(days)
+
+        monkeypatch.setattr("bosch_flow_mcp.helpers.date", Midnight)
+        assert parse_date("0d") == (date(2026, 3, 31), date(2026, 3, 31))
+
+    def test_a_missing_start_is_never_inverted(self):
+        assert parse_date(None, "0001-01-01") == (date.min, date.min)
+
+    @pytest.mark.parametrize("end", ["0001-01-01", "0001-01", "1999-12", "2026-03-01", "0d"])
+    def test_the_start_meaning_all_records_precedes_every_end(self, end):
+        assert parse_date(EARLIEST_DATE, end)[0] == date.min
 
 
 class TestTheAuthGate:

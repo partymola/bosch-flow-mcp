@@ -33,13 +33,14 @@ async def bosch_get_batteries(
         latest_only: If True (default), return only the most recent snapshot per bike.
             Set to False to return all snapshots in the date range.
     """
+    if not latest_only:
+        start, end = parse_date(start_date, end_date, default_days=30)
     await anyio.to_thread.run_sync(lambda: auto_sync_if_stale("batteries"))
     conn = db.get_db()
     try:
         if latest_only:
             snapshots = db.query_battery_latest(conn, bike_id)
         else:
-            start, end = parse_date(start_date, end_date, default_days=30)
             snapshots = db.query_batteries(conn, bike_id, start.isoformat(), end.isoformat())
         note = empty_data_note(conn, "batteries", fallback_type="bikes") if not snapshots else {}
     finally:

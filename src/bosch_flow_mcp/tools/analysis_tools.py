@@ -7,7 +7,7 @@ from typing import Literal
 import anyio
 
 from .. import db
-from ..helpers import empty_data_note, format_response, require_auth
+from ..helpers import EARLIEST_DATE, empty_data_note, format_response, parse_date, require_auth
 from ..mcp_instance import mcp
 from .sync_tools import auto_sync_if_stale
 
@@ -66,17 +66,15 @@ async def bosch_battery_trends(
         start_date: Start date (YYYY-MM-DD, YYYY-MM, Nd, or None for all data).
         end_date: End date. Default: today.
     """
+    if start_date or end_date:
+        start, end = parse_date(start_date or EARLIEST_DATE, end_date)
+        start_str, end_str = start.isoformat(), end.isoformat()
+    else:
+        start_str, end_str = EARLIEST_DATE, "2999-12-31"
     await anyio.to_thread.run_sync(lambda: auto_sync_if_stale("batteries"))
     conn = db.get_db()
     try:
         # Fetch all snapshots for the date range
-        if start_date or end_date:
-            from ..helpers import parse_date
-
-            start, end = parse_date(start_date or "2000-01-01", end_date)
-            start_str, end_str = start.isoformat(), end.isoformat()
-        else:
-            start_str, end_str = "2000-01-01", "2999-12-31"
         snapshots = db.query_batteries(conn, bike_id, start_str, end_str)
         note = empty_data_note(conn, "batteries", fallback_type="bikes") if not snapshots else {}
     finally:

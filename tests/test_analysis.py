@@ -129,7 +129,7 @@ async def test_battery_trends_no_data(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     "dates",
     [
-        {"start_date": "2030-01"},
+        {"start_date": "2026-05"},
         {"start_date": "2026-03-20", "end_date": "2026-03-21"},
         {"end_date": "2020-01"},
     ],
@@ -165,5 +165,6 @@ async def test_an_empty_cache_says_why_the_last_sync_left_it_empty(tmp_path, mon
 async def test_an_empty_range_adds_no_note_after_a_good_sync():
     from bosch_flow_mcp.tools.analysis_tools import bosch_battery_trends
 
-    data = json.loads(await bosch_battery_trends(start_date="2030-01"))
+    data = json.loads(await bosch_battery_trends(start_date="2026-05"))
+    assert data["trends"] == []
     assert "note" not in data

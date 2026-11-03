@@ -60,6 +60,10 @@ class InvalidDateError(ValueError):
     """
 
 
+# The start a tool covering all records passes. No end date precedes it, so an
+# end date alone is never refused over a start the caller did not send.
+EARLIEST_DATE = date.min.isoformat()
+
 _RELATIVE_RE = re.compile(r"^(\d+)d$")
 
 
@@ -75,14 +79,24 @@ def parse_date(
         "YYYY-MM"     -> first of month (start) or last of month (end)
         "30d"         -> 30 days ago from today
         None          -> default_days before the end date (start) or today (end)
+
+    A start after the end is refused, because the empty answer reads as no data.
     """
-    end_date = _parse_single_date(end_str, date.today(), is_end=True)
+    # Read once, or `0d` across midnight lands after the end date it defaults to.
+    today = date.today()
+    end_date = _parse_single_date(end_str, today, today, is_end=True)
     # By ordinal, because the date arithmetic raises past year 1.
     default_start = date.fromordinal(max(end_date.toordinal() - default_days, 1))
-    return _parse_single_date(start_str, default_start, is_end=False), end_date
+    start_date = _parse_single_date(start_str, default_start, today, is_end=False)
+    if start_date > end_date:
+        end_name = f"end date {end_date}" if end_str is not None else f"today ({end_date})"
+        raise InvalidDateError(
+            f"Start date {start_date} is after {end_name}. Use a start on or before that date."
+        )
+    return start_date, end_date
 
 
-def _parse_single_date(date_str: str | None, default: date, is_end: bool) -> date:
+def _parse_single_date(date_str: str | None, default: date, today: date, is_end: bool) -> date:
     if date_str is None:
         return default
 
@@ -93,7 +107,7 @@ def _parse_single_date(date_str: str | None, default: date, is_end: bool) -> dat
     try:
         m = _RELATIVE_RE.match(date_str)
         if m:
-            return date.today() - timedelta(days=int(m.group(1)))
+            return today - timedelta(days=int(m.group(1)))
 
         if re.match(r"^\d{4}-\d{2}$", date_str):
             year, month = int(date_str[:4]), int(date_str[5:7])

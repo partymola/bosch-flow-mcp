@@ -235,6 +235,153 @@ async def test_software_updates_with_only_an_end_date_go_back_to_the_first():
     assert [u["installed_at"] for u in json.loads(result)["software_updates"]] == [old]
 
 
+async def _call_tool(tool, **args):
+    """Through the server's registry, as a client reaches it, with no rides to serve."""
+    from bosch_flow_mcp.mcp_instance import mcp
+    from bosch_flow_mcp.tools import (  # noqa: F401
+        activity_tools,
+        analysis_tools,
+        battery_tools,
+        service_tools,
+    )
+
+    with patch("bosch_flow_mcp.tools.activity_tools.api.get", return_value={"data": []}):
+        result = await mcp.call_tool(tool, args)
+    return json.loads("".join(c.text for c in result.content))
+
+
+RANGE_TOOLS = [
+    ("bosch_get_batteries", {"latest_only": False}, "batteries"),
+    ("bosch_battery_trends", {}, "trends"),
+    ("bosch_get_service_records", {}, "service_records"),
+    ("bosch_get_software_updates", {}, "software_updates"),
+    ("bosch_get_activities", {}, "activities"),
+]
+RANGE_TOOL_IDS = [tool for tool, _, _ in RANGE_TOOLS]
+AUTO_SYNCING_TOOLS = {
+    "bosch_get_batteries": ("battery_tools", {"latest_only": False}),
+    "bosch_battery_trends": ("analysis_tools", {}),
+    "bosch_get_service_records": ("service_tools", {}),
+    "bosch_get_software_updates": ("service_tools", {}),
+}
+ALL_RECORDS_TOOLS = {
+    "bosch_battery_trends": lambda data: [t["period"] for t in data["trends"]],
+    "bosch_get_service_records": lambda data: [
+        r["service_date"][:7] for r in data["service_records"]
+    ],
+    "bosch_get_software_updates": lambda data: [
+        u["installed_at"][:7] for u in data["software_updates"]
+    ],
+}
+
+
+def _seed_records_from_1999():
+    from bosch_flow_mcp import db
+
+    conn = db.get_db()
+    db.save_battery_snapshot(
+        conn, FAKE_BIKE_ID, {"battery_id": FAKE_BATTERY_ID}, "1999-06-15T08:00:00+00:00"
+    )
+    db.save_service_record(conn, FAKE_BIKE_ID, {"id": "SVC-1999", "date": "1999-06-15"})
+    db.save_software_update(
+        conn, FAKE_BIKE_ID, {"installedAt": "1999-06-15T12:00:00Z", "component": "driveUnit"}
+    )
+    conn.commit()
+    conn.close()
+
+
+@pytest.mark.parametrize("tool,args,_key", RANGE_TOOLS, ids=RANGE_TOOL_IDS)
+async def test_every_date_tool_refuses_an_inverted_range(tool, args, _key):
+    data = await _call_tool(tool, **args, start_date="2026-03-31", end_date="2026-03-01")
+    assert data == {
+        "error": (
+            "Start date 2026-03-31 is after end date 2026-03-01. "
+            "Use a start on or before that date."
+        )
+    }
+
+
+@pytest.mark.parametrize("tool,args,_key", RANGE_TOOLS, ids=RANGE_TOOL_IDS)
+async def test_every_date_tool_refuses_a_start_after_today_with_no_end(tool, args, _key):
+    data = await _call_tool(tool, **args, start_date="2999-01-01")
+    assert data == {
+        "error": (
+            f"Start date 2999-01-01 is after today ({date.today().isoformat()}). "
+            "Use a start on or before that date."
+        )
+    }
+
+
+@pytest.mark.parametrize("tool,args,key", RANGE_TOOLS, ids=RANGE_TOOL_IDS)
+@pytest.mark.parametrize("end_date", ["1999-12", "0001-01-01"])
+async def test_an_end_date_alone_is_never_refused(tool, args, key, end_date):
+    """Nobody gave a start, so a refusal would name one the caller never sent."""
+    data = await _call_tool(tool, **args, end_date=end_date)
+    assert "error" not in data
+    assert data[key] == []
+
+
+@pytest.mark.parametrize("tool", AUTO_SYNCING_TOOLS)
+@pytest.mark.parametrize(
+    "dates",
+    [{"start_date": "2026-03-31", "end_date": "2026-03-01"}, {"start_date": "not-a-date"}],
+    ids=["inverted", "not-a-date"],
+)
+async def test_a_refused_date_costs_no_sync(tool, dates):
+    module, args = AUTO_SYNCING_TOOLS[tool]
+    with patch(f"bosch_flow_mcp.tools.{module}.auto_sync_if_stale") as auto_sync:
+        data = await _call_tool(tool, **args, **dates)
+    assert "error" in data
+    auto_sync.assert_not_called()
+
+
+@pytest.mark.parametrize("tool", AUTO_SYNCING_TOOLS)
+@pytest.mark.parametrize(
+    "dates",
+    [{"start_date": "2026-03-01", "end_date": "2026-03-31"}, {}],
+    ids=["range", "no-dates"],
+)
+async def test_an_accepted_date_still_syncs_first(tool, dates):
+    module, args = AUTO_SYNCING_TOOLS[tool]
+    with patch(f"bosch_flow_mcp.tools.{module}.auto_sync_if_stale") as auto_sync:
+        data = await _call_tool(tool, **args, **dates)
+    assert "error" not in data
+    auto_sync.assert_called_once()
+
+
+@pytest.mark.parametrize("tool,records", ALL_RECORDS_TOOLS.items(), ids=list(ALL_RECORDS_TOOLS))
+async def test_an_end_date_before_2000_means_everything_up_to_it(tool, records):
+    _seed_records_from_1999()
+    assert records(await _call_tool(tool, end_date="1999-12")) == ["1999-06"]
+
+
+@pytest.mark.parametrize("tool,records", ALL_RECORDS_TOOLS.items(), ids=list(ALL_RECORDS_TOOLS))
+async def test_a_later_end_date_alone_still_reaches_back_to_1999(tool, records):
+    _seed_records_from_1999()
+    found = records(await _call_tool(tool, end_date="2026-03-31"))
+    assert sorted(found) == ["1999-06", "2026-03"]
+
+
+async def test_battery_trends_with_no_dates_cover_a_record_from_before_2000():
+    _seed_records_from_1999()
+    data = await _call_tool("bosch_battery_trends")
+    assert [t["period"] for t in data["trends"]] == ["1999-06", "2026-03", "2026-04"]
+
+
+async def test_battery_trends_with_no_dates_cover_a_future_dated_snapshot():
+    from bosch_flow_mcp import db
+
+    conn = db.get_db()
+    db.save_battery_snapshot(
+        conn, FAKE_BIKE_ID, {"battery_id": FAKE_BATTERY_ID}, "2030-01-15T08:00:00+00:00"
+    )
+    conn.commit()
+    conn.close()
+
+    data = await _call_tool("bosch_battery_trends")
+    assert [t["period"] for t in data["trends"]] == ["2026-03", "2026-04", "2030-01"]
+
+
 async def test_bosch_get_components_all():
     from bosch_flow_mcp.tools.component_tools import bosch_get_components
 
