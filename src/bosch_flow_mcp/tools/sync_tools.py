@@ -338,6 +338,36 @@ def _battery_components(conn) -> list[dict]:
     return db.query_components(conn, bike_id=None, component_type=spellings)
 
 
+def _test_date(test: dict) -> str | None:
+    """The first date in text or as a number; anything else cannot be stored as one."""
+    for key in ("testDate", "date"):
+        value = test.get(key)
+        if isinstance(value, str) and value:
+            return value
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return str(value)
+    return None
+
+
+def _tests_in(response) -> list[dict]:
+    """The capacity tests a tester answer holds."""
+    if isinstance(response, dict):
+        held = [response[key] for key in ("capacityTests", "data") if key in response]
+        tests = next((value for value in held if isinstance(value, list) and value), None)
+        if tests is not None:
+            response = tests
+        else:
+            # An object counts as a test only if it has a date, since an
+            # envelope holding no test would otherwise be stored as one.
+            bare = next((value for value in held if isinstance(value, dict)), None)
+            if bare is None and not held:
+                bare = response
+            response = [bare] if bare is not None and _test_date(bare) else []
+    if not isinstance(response, list):
+        return []
+    return [test for test in response if isinstance(test, dict)]
+
+
 def _sync_capacity(conn, is_euda: bool = True) -> int:
     """Fetch battery capacity tester data for all battery components (Data Act only)."""
     battery_comps = _battery_components(conn)
@@ -364,15 +394,8 @@ def _sync_capacity(conn, is_euda: bool = True) -> int:
         )
         if not response:
             continue
-        tests = response if isinstance(response, list) else response.get("capacityTests", [])
-        if not tests and isinstance(response, dict):
-            tests = response.get("data", [])
-            # One test only if it has a date: a NULL date defeats the UNIQUE key.
-            if not tests and (response.get("testDate") or response.get("date")):
-                tests = [response]
-        for test in tests:
-            test_date = test.get("testDate") or test.get("date")
-            db.save_capacity_test(conn, part, serial, test_date, test)
+        for test in _tests_in(response):
+            db.save_capacity_test(conn, part, serial, _test_date(test), test)
             count += 1
 
     conn.commit()

@@ -181,10 +181,15 @@ def save_battery_snapshot(
 def save_capacity_test(
     conn: sqlite3.Connection, part_number: str, serial_number: str, test_date: str | None, raw: dict
 ) -> None:
+    # The UNIQUE key treats NULLs as distinct, so it cannot stop an undated test
+    # adding a row on every sync. One statement, so a second writer cannot
+    # insert between the check and the write.
+    raw_json = json.dumps(raw)
     conn.execute(
         """INSERT OR IGNORE INTO capacity_tests (part_number, serial_number, test_date, raw_json)
-        VALUES (?, ?, ?, ?)""",
-        (part_number, serial_number, test_date, json.dumps(raw)),
+        SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM capacity_tests
+            WHERE part_number = ? AND serial_number = ? AND test_date IS ? AND raw_json = ?)""",
+        (part_number, serial_number, test_date, raw_json) * 2,
     )
 
 

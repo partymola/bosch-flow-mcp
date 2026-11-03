@@ -975,8 +975,32 @@ def _sync_capacity_twice(db_path, answer):
 
 @pytest.mark.parametrize(
     "answer",
-    [{"capacityTests": []}, {"data": []}, {"meta": {"count": 0}}],
-    ids=["capacity-tests", "data", "unrecognised"],
+    [
+        {"capacityTests": []},
+        {"data": []},
+        {"meta": {"count": 0}},
+        {"data": None},
+        {"data": {"capacity": 90}},
+        {"data": "nope"},
+        "nope",
+        5,
+        [1, "nope"],
+        {"capacityTests": [], "date": "2026-03-10"},
+        {"data": None, "testDate": "2026-03-10"},
+    ],
+    ids=[
+        "capacity-tests",
+        "data",
+        "unrecognised",
+        "null-data",
+        "undated-data-object",
+        "data-text",
+        "text",
+        "number",
+        "entries-not-objects",
+        "dated-envelope-of-no-tests",
+        "dated-envelope-of-null-data",
+    ],
 )
 def test_a_tester_answer_holding_no_test_stores_nothing(token_as, routed_db, answer):
     token_as("euda-test")
@@ -993,14 +1017,64 @@ def test_a_tester_answer_holding_no_test_stores_nothing(token_as, routed_db, ans
         {"capacityTests": [{"testDate": "2026-03-10"}]},
         {"data": [{"testDate": "2026-03-10"}]},
         [{"testDate": "2026-03-10"}],
+        {"data": {"testDate": "2026-03-10"}},
+        {"data": [{"testDate": "2026-03-10"}], "capacityTests": []},
+        {"capacityTests": {"testDate": "2026-03-10"}},
     ],
-    ids=["bare-test-date", "bare-date", "capacity-tests", "data", "list"],
+    ids=[
+        "bare-test-date",
+        "bare-date",
+        "capacity-tests",
+        "data",
+        "list",
+        "data-object",
+        "empty-capacity-tests-then-data",
+        "capacity-tests-object",
+    ],
 )
 def test_a_tester_answer_holding_a_test_stores_it_once(token_as, routed_db, answer):
     token_as("euda-test")
     first, dates = _sync_capacity_twice(routed_db, answer)
     assert first == {"capacity": {"status": "ok", "records": 1}}
     assert dates == ["2026-03-10"]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        [{"capacity": 90}],
+        {"capacityTests": [{"capacity": 90}]},
+        {"data": [{"capacity": 90}]},
+        [{"testDate": {"day": 10}}],
+    ],
+    ids=["list", "capacity-tests", "data", "date-not-text"],
+)
+def test_an_undated_test_in_a_list_is_stored_once(token_as, routed_db, answer):
+    token_as("euda-test")
+    first, dates = _sync_capacity_twice(routed_db, answer)
+    assert first == {"capacity": {"status": "ok", "records": 1}}
+    assert dates == [None]
+
+
+def test_undated_tests_that_differ_or_belong_to_another_battery_are_all_kept(tmp_db):
+    saves = [
+        ("P1", "S1", {"capacity": 90}),
+        ("P1", "S1", {"capacity": 80}),
+        ("P1", "S2", {"capacity": 90}),
+        ("P2", "S1", {"capacity": 90}),
+        ("P1", "S1", {"capacity": 90}),
+    ]
+    for part, serial, raw in saves:
+        db.save_capacity_test(tmp_db, part, serial, None, raw)
+    stored = tmp_db.execute(
+        "SELECT part_number, serial_number, raw_json FROM capacity_tests ORDER BY id"
+    ).fetchall()
+    assert [tuple(row) for row in stored] == [
+        ("P1", "S1", '{"capacity": 90}'),
+        ("P1", "S1", '{"capacity": 80}'),
+        ("P1", "S2", '{"capacity": 90}'),
+        ("P2", "S1", '{"capacity": 90}'),
+    ]
 
 
 # --- Components from the mobile profile ---
