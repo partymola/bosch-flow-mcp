@@ -121,7 +121,11 @@ def get_db(db_path: Path | str | None = None) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
-    conn.executescript(SCHEMA)
+    try:
+        conn.executescript(SCHEMA)
+    except sqlite3.Error:
+        conn.close()
+        raise
     return conn
 
 

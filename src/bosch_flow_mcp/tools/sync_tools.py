@@ -489,15 +489,14 @@ def auto_sync_if_stale(data_type: str) -> None:
 
     Failures are silently suppressed - the caller should still query the cache.
     """
-    conn = db.get_db()
-    last_sync = db.get_last_sync_time(conn, data_type)
-    conn.close()
-
-    today_utc = datetime.now(timezone.utc).date()
-    if last_sync is not None and last_sync.date() >= today_utc:
-        return
-
     try:
+        with contextlib.closing(db.get_db()) as conn:
+            last_sync = db.get_last_sync_time(conn, data_type)
+
+        today_utc = datetime.now(timezone.utc).date()
+        if last_sync is not None and last_sync.date() >= today_utc:
+            return
+
         run_sync([data_type])
     except Exception:
         logger.debug("Auto-sync failed for %s", data_type, exc_info=True)

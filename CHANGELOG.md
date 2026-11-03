@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An EU Data Act sign-in whose bike list is empty reports `empty` with the non-EU explanation for every data type that stored nothing. `service`, `software_updates` and `capacity` recorded `ok` with 0 records. `components` no longer gives that explanation when the bike list failed.
 - A 404 or an answer that is not a bike list is a failure on an EU Data Act sign-in, and the next read tries again. Each read as an empty list, which told you to delete your config for the rest of the UTC day.
 - A bike list wrapped as `{"data": {"attributes": {"bikes": [...]}}}` is read. It ended in an unexpected error.
+- A locked or unreadable database while auto-sync opens the cache no longer stops a read tool before its own query. It answered with an unexpected error even when the lock had cleared.
 
 ### Packaging
 

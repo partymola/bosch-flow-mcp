@@ -168,6 +168,91 @@ def test_auto_sync_if_stale_swallows_errors(tmp_path, monkeypatch):
         auto_sync_if_stale("batteries")  # Should not raise
 
 
+class TestAutoSyncKeepsItsFailuresToItself:
+    """A read tool calls this first and queries the cache whatever happens here."""
+
+    @pytest.mark.parametrize(
+        "failure",
+        [sqlite3.OperationalError("database is locked"), PermissionError(13, "Permission denied")],
+        ids=["lock", "oserror"],
+    )
+    def test_a_failure_while_opening_the_cache_does_not_escape(self, failure):
+        with (
+            patch.object(sync_tools.db, "get_db", side_effect=failure),
+            patch.object(sync_tools, "run_sync") as mock_run,
+        ):
+            auto_sync_if_stale("batteries")
+        mock_run.assert_not_called()
+
+    def test_a_file_that_is_not_a_database_does_not_escape(self, tmp_path, monkeypatch):
+        not_a_database = tmp_path / "not-a-database.db"
+        not_a_database.write_bytes(b"not a database file " * 100)
+        monkeypatch.setenv("BOSCH_FLOW_MCP_DB_PATH", str(not_a_database))
+        with patch.object(sync_tools, "run_sync") as mock_run:
+            auto_sync_if_stale("batteries")
+        mock_run.assert_not_called()
+
+    def test_a_malformed_sync_time_does_not_escape(self, tmp_path, monkeypatch):
+        import bosch_flow_mcp.db as db_module
+
+        db_path = tmp_path / "test.db"
+        conn = db_module.get_db(db_path)
+        conn.execute(
+            "INSERT INTO sync_log (synced_at, data_type, status) VALUES (?, ?, ?)",
+            ("not-a-date", "batteries", "ok"),
+        )
+        conn.commit()
+        conn.close()
+        monkeypatch.setenv("BOSCH_FLOW_MCP_DB_PATH", str(db_path))
+        with patch.object(sync_tools, "run_sync") as mock_run:
+            auto_sync_if_stale("batteries")
+        mock_run.assert_not_called()
+
+    def test_a_lock_while_reading_the_last_sync_closes_the_connection(self):
+        conn = MagicMock()
+        with (
+            patch.object(sync_tools.db, "get_db", return_value=conn),
+            patch.object(
+                sync_tools.db,
+                "get_last_sync_time",
+                side_effect=sqlite3.OperationalError("database is locked"),
+            ),
+        ):
+            auto_sync_if_stale("batteries")
+        conn.close.assert_called_once_with()
+
+    def test_the_connection_is_closed_before_the_sync_opens_its_own(self):
+        conn = MagicMock()
+        closed_when_the_sync_began = []
+        with (
+            patch.object(sync_tools.db, "get_db", return_value=conn),
+            patch.object(sync_tools.db, "get_last_sync_time", return_value=None),
+            patch.object(
+                sync_tools,
+                "run_sync",
+                side_effect=lambda _types: closed_when_the_sync_began.append(conn.close.called),
+            ),
+        ):
+            auto_sync_if_stale("batteries")
+        assert closed_when_the_sync_began == [True]
+
+    async def test_a_read_tool_still_answers_from_the_cache(self, tmp_path, monkeypatch):
+        import bosch_flow_mcp.db as db_module
+        from bosch_flow_mcp.tools.bike_tools import bosch_get_bikes
+
+        db_path = tmp_path / "test.db"
+        conn = db_module.get_db(db_path)
+        db_module.save_bike(conn, FAKE_BIKE_ID, {"name": "Cached"})
+        conn.commit()
+        conn.close()
+        monkeypatch.setenv("BOSCH_FLOW_MCP_DB_PATH", str(db_path))
+
+        opens = [sqlite3.OperationalError("database is locked"), db_module.get_db(db_path)]
+        with patch.object(db_module, "get_db", side_effect=opens):
+            data = json.loads(await bosch_get_bikes())
+        assert [bike["bike_id"] for bike in data["bikes"]] == [FAKE_BIKE_ID]
+
+
 def test_auto_sync_skips_after_unavailable_today(tmp_path, monkeypatch):
     """An 'unavailable' result counts as 'checked today' - no retry spam."""
     import bosch_flow_mcp.db as db_module

@@ -1,5 +1,6 @@
 """Tests for SQLite schema and helpers."""
 
+import sqlite3
 from datetime import datetime, timezone
 
 import pytest
@@ -28,6 +29,26 @@ def test_get_db_creates_schema(tmp_path):
     assert "capacity_tests" in tables
     assert "sync_log" in tables
     conn.close()
+
+
+def test_get_db_closes_the_connection_when_the_schema_cannot_be_applied(tmp_path, monkeypatch):
+    """A file SQLite cannot use fails here, and the caller has no connection to close."""
+    opened = []
+    real_connect = sqlite3.connect
+
+    def connect(*args, **kwargs):
+        opened.append(real_connect(*args, **kwargs))
+        return opened[-1]
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    not_a_database = tmp_path / "not-a-database.db"
+    not_a_database.write_bytes(b"not a database file " * 100)
+
+    with pytest.raises(sqlite3.DatabaseError):
+        db.get_db(not_a_database)
+
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        opened[0].execute("SELECT 1")
 
 
 def test_save_and_query_bike(tmp_db):
