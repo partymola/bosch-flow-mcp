@@ -335,34 +335,56 @@ async def test_a_refused_date_costs_no_sync(tool, dates):
     auto_sync.assert_not_called()
 
 
+def _sync_writes(tool, day):
+    """Save the row a sync of the tool's type would store on `day`."""
+    from bosch_flow_mcp import db
+
+    conn = db.get_db()
+    if tool in ("bosch_get_batteries", "bosch_battery_trends"):
+        db.save_battery_snapshot(
+            conn, FAKE_BIKE_ID, {"battery_id": "SYNCED"}, f"{day}T08:00:00+00:00"
+        )
+    elif tool == "bosch_get_service_records":
+        db.save_service_record(conn, FAKE_BIKE_ID, {"id": "SVC-SYNCED", "date": day})
+    else:
+        db.save_software_update(
+            conn, FAKE_BIKE_ID, {"installedAt": f"{day}T12:00:00Z", "component": "synced"}
+        )
+    conn.commit()
+    conn.close()
+
+
+SYNCED_ROW_IN = {
+    "bosch_get_batteries": lambda data, day: (
+        "SYNCED" in [b["battery_id"] for b in data["batteries"]]
+    ),
+    "bosch_battery_trends": lambda data, day: day[:7] in [t["period"] for t in data["trends"]],
+    "bosch_get_service_records": lambda data, day: (
+        "SVC-SYNCED" in [r["record_id"] for r in data["service_records"]]
+    ),
+    "bosch_get_software_updates": lambda data, day: (
+        "synced" in [u["component"] for u in data["software_updates"]]
+    ),
+}
+
+
 @pytest.mark.parametrize("tool", AUTO_SYNCING_TOOLS)
 @pytest.mark.parametrize(
     "dates",
-    [{"start_date": "2026-03-01", "end_date": "2026-03-31"}, {}],
+    [{"start_date": "2026-05-01", "end_date": "2026-05-31"}, {}],
     ids=["range", "no-dates"],
 )
-async def test_an_accepted_date_still_syncs_first(tool, dates):
+async def test_an_accepted_date_answers_with_what_the_sync_stored(tool, dates):
     """After the query, the sync's data would wait for the next read."""
-    from bosch_flow_mcp import db
-
     module, args = AUTO_SYNCING_TOOLS[tool]
-    events = []
-    open_cache = db.get_db
-
-    def query(*a, **kw):
-        events.append("query")
-        return open_cache(*a, **kw)
-
-    with (
-        patch(
-            f"bosch_flow_mcp.tools.{module}.auto_sync_if_stale",
-            side_effect=lambda _type: events.append("sync"),
-        ),
-        patch.object(db, "get_db", side_effect=query),
+    day = "2026-05-15" if dates else date.today().isoformat()
+    with patch(
+        f"bosch_flow_mcp.tools.{module}.auto_sync_if_stale",
+        side_effect=lambda _type: _sync_writes(tool, day),
     ):
         data = await _call_tool(tool, **args, **dates)
     assert "error" not in data
-    assert events == ["sync", "query"]
+    assert SYNCED_ROW_IN[tool](data, day)
 
 
 @pytest.mark.parametrize("tool,records", ALL_RECORDS_TOOLS.items(), ids=list(ALL_RECORDS_TOOLS))

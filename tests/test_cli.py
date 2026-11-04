@@ -154,7 +154,16 @@ class TestAFailedCommandEndsInOneLine:
         answers = []
 
         class Listener(auth._CallbackServer):
+            # A listener that asks again, or a request that never arrives,
+            # fails the test rather than hanging it.
+            timeout = 5
+            asked = 0
+
             def handle_request(self):
+                Listener.asked += 1
+                if Listener.asked > 1:
+                    pytest.fail("the listener asked for a second request")
+
                 def request():
                     with socket.create_connection(self.server_address[:2], timeout=5) as conn:
                         conn.sendall(b"GET http://[x HTTP/1.0\r\n\r\n")
@@ -234,7 +243,13 @@ def _callback_server_handling(failure):
 
 
 @pytest.mark.parametrize(
-    "failure", [ConnectionResetError(104, "reset"), BrokenPipeError(32, "broken pipe")]
+    "failure",
+    [
+        ConnectionResetError(104, "reset"),
+        BrokenPipeError(32, "broken pipe"),
+        ConnectionAbortedError(103, "aborted"),
+    ],
+    ids=["reset", "broken-pipe", "aborted"],
 )
 def test_a_callback_connection_dropped_mid_request_prints_nothing(failure, capsys):
     _callback_server_handling(failure)

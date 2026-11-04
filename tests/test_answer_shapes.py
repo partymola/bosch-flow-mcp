@@ -58,6 +58,8 @@ def test_attributes_that_are_not_an_object_are_no_type_s_non_eu_trap(token_as, r
         ([{"testDate": {"day": 10}, "date": "2026-01-01"}], "2026-01-01"),
         ([{"testDate": "", "date": "2026-01-01"}], "2026-01-01"),
         ([{"testDate": True}], None),
+        ([{"testDate": [2026, 3, 10]}], None),
+        ([{"testDate": "2026-03-10", "date": "2026-01-01"}], "2026-03-10"),
     ],
     ids=[
         "number-in-a-list",
@@ -66,6 +68,8 @@ def test_attributes_that_are_not_an_object_are_no_type_s_non_eu_trap(token_as, r
         "text-beside-an-object",
         "empty-text",
         "bool",
+        "list",
+        "test-date-before-date",
     ],
 )
 def test_a_test_date_is_the_first_one_that_can_be_stored(token_as, routed_db, answer, stored):
@@ -78,8 +82,9 @@ def test_a_test_date_is_the_first_one_that_can_be_stored(token_as, routed_db, an
 def test_two_writers_store_an_undated_test_once(tmp_path):
     """The second writer's check must run after the first commits, not before.
 
-    It can only fail to catch a regression, if the thread has not reached its
-    statement within the wait; it cannot fail a correct implementation.
+    It misses a regression if the writer thread takes longer than the wait to
+    reach its statement. It fails a correct implementation only if the main
+    thread stalls past SQLite's 5 s busy timeout before committing.
     """
     path = tmp_path / "race.db"
     first = db.get_db(path)
@@ -103,6 +108,33 @@ def test_two_writers_store_an_undated_test_once(tmp_path):
         assert first.execute("SELECT COUNT(*) FROM capacity_tests").fetchone()[0] == 1
     finally:
         first.close()
+
+
+def _stored_tests(conn):
+    rows = conn.execute("SELECT test_date, raw_json FROM capacity_tests ORDER BY id")
+    return [tuple(row) for row in rows]
+
+
+def test_an_undated_test_whose_keys_arrive_in_another_order_adds_a_row(tmp_db):
+    """A residue: the stored JSON keeps the order Bosch sent."""
+    db.save_capacity_test(tmp_db, "P1", "S1", None, {"capacity": 90, "cycles": 5})
+    db.save_capacity_test(tmp_db, "P1", "S1", None, {"cycles": 5, "capacity": 90})
+    assert len(_stored_tests(tmp_db)) == 2
+
+
+def test_a_dated_test_whose_contents_change_keeps_the_first_row(tmp_db):
+    db.save_capacity_test(tmp_db, "P1", "S1", "2026-03-10", {"capacity": 90})
+    db.save_capacity_test(tmp_db, "P1", "S1", "2026-03-10", {"capacity": 89})
+    assert _stored_tests(tmp_db) == [("2026-03-10", '{"capacity": 90}')]
+
+
+@pytest.mark.parametrize("client", ["euda-test", "one-bike-app"])
+def test_an_error_beside_a_bike_list_does_not_hide_the_bikes(token_as, routed_db, client):
+    token_as(client)
+    answer = {"bikes": [BIKE], "errors": [{"code": "partial"}]}
+    with patch("bosch_flow_mcp.tools.sync_tools.api.get", return_value=answer):
+        results = sync_tools.run_sync(["bikes"])
+    assert results == {"bikes": {"status": "ok", "records": 1}}
 
 
 def test_an_os_error_that_is_not_a_dropped_connection_keeps_its_traceback(capsys):
