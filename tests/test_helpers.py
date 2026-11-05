@@ -19,6 +19,20 @@ def test_format_response_list():
     assert json.loads(result) == [1, 2, 3]
 
 
+@pytest.mark.parametrize(
+    "result,expected",
+    [
+        ({"a": {"b": [1, {"c": 2}]}}, '{"a": {"b": [1, {"c": 2}]}}'),
+        ([{"a": [1]}, 2], '[{"a": [1]}, 2]'),
+        ({"b": "é", "a": date(2026, 1, 1)}, '{"b": "\\u00e9", "a": "2026-01-01"}'),
+    ],
+)
+def test_compact_json_keeps_a_reply_as_long_as_its_contents(result, expected):
+    """Indented, the output grows with the square of a reply's nesting. Keys keep
+    their order, text is escaped to ASCII, and a date is written as its text."""
+    assert format_response(result) == expected
+
+
 def test_format_response_none():
     result = format_response(None)
     assert json.loads(result) is None

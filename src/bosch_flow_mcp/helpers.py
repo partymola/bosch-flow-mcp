@@ -40,7 +40,7 @@ def empty_data_note(conn, data_type: str, fallback_type: str | None = None) -> d
 def format_response(result: Any) -> str:
     """JSON-serialize a result for MCP transport."""
     if isinstance(result, (dict, list)):
-        return json.dumps(result, indent=2, default=str)
+        return json.dumps(result, default=str)
     elif result is None:
         return json.dumps(None)
     else:

@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An end date after today with no start date covers the 30 days before today. The missing start was counted back from the end date, so `bosch_get_activities`, and `bosch_get_batteries` with `latest_only=False`, covered fewer of the days before today for an end date after today, and none of them for one 30 or more days ahead.
 - A month or a day count followed by a newline, such as `"2026-03\n"` or `"30d\n"`, is refused with the accepted formats. It was read as the value before the newline.
 
+### Changed
+
+- Tool results are compact JSON rather than indented. Indentation made a result's size grow with the square of its nesting, so a deeply nested reply from Bosch could become megabytes. Only whitespace changes.
+
 ## [0.9.0] - 2026-11-04
 
 ### Fixed
