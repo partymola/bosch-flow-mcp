@@ -133,6 +133,56 @@ def test_run_sync_unknown_type():
     assert results["does_not_exist"]["status"] == "error"
 
 
+class TestRunSyncClosesTheConnectionItOpens:
+    """run_sync closes what it opens, on a normal run and when reading the client fails."""
+
+    @pytest.fixture
+    def recorded(self, tmp_path):
+        """A get_db stand-in that records each connection it opens and each it closes."""
+        opened = []
+        closed = []
+
+        class RecordingConnection(sqlite3.Connection):
+            def close(self):
+                closed.append(self)
+                super().close()
+
+        def recording_get_db(db_path=None):
+            conn = sqlite3.connect(str(tmp_path / "recorded.db"), factory=RecordingConnection)
+            conn.row_factory = sqlite3.Row
+            conn.executescript(sync_tools.db.SCHEMA)
+            opened.append(conn)
+            return conn
+
+        with patch.object(sync_tools.db, "get_db", side_effect=recording_get_db):
+            yield opened, closed
+
+    def test_a_failure_reading_the_client_closes_every_connection_opened(self, recorded):
+        opened, closed = recorded
+        with (
+            patch.object(
+                sync_tools.auth, "token_is_euda", side_effect=PermissionError(13, "unreadable")
+            ),
+            pytest.raises(PermissionError),
+        ):
+            run_sync(["bikes"])
+
+        assert closed == opened
+
+    def test_the_recorder_sees_a_connection_opened_and_closed_by_a_normal_run(self, recorded):
+        """The control for the test above: that one passes if nothing is opened, so this
+        shows the recorder sees an open and a close."""
+        opened, closed = recorded
+        with (
+            patch.object(sync_tools.auth, "token_is_euda", return_value=False),
+            patch.object(sync_tools.api, "get", side_effect=_mock_api_get),
+        ):
+            run_sync(["bikes"])
+
+        assert len(opened) == 1
+        assert closed == opened
+
+
 def test_auto_sync_if_stale_skips_if_synced_today(tmp_path, monkeypatch):
     """auto_sync_if_stale does not call run_sync if already synced today."""
     import bosch_flow_mcp.db as db_module

@@ -460,11 +460,10 @@ def run_sync(data_types: list[str]) -> dict:
     "ok". Statuses: ok | empty (euda non-EU trap) | unavailable (Data-Act-only on the
     app client) | error | auth_error | rate_limited - never a silent 0.
     """
-    conn = db.get_db()
     results: dict[str, dict] = {}
     is_euda = auth.token_is_euda()
 
-    try:
+    with contextlib.closing(db.get_db()) as conn:
         for dtype in data_types:
             sync_fn = _SYNC_DISPATCH.get(dtype)
             if sync_fn is None:
@@ -541,8 +540,6 @@ def run_sync(data_types: list[str]) -> dict:
 
             _write_row(conn, dtype, "ok", count)
             results[dtype] = {"status": "ok", "records": count}
-    finally:
-        conn.close()
 
     return results
 
