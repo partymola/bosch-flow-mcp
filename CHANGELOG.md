@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- An end date after today with no start date covers the 30 days before today. The missing start was counted back from the end date, so `bosch_get_activities`, and `bosch_get_batteries` with `latest_only=False`, covered fewer of the days before today for an end date after today, and none of them for one 30 or more days ahead.
+- A month or a day count followed by a newline, such as `"2026-03\n"` or `"30d\n"`, is refused with the accepted formats. It was read as the value before the newline.
+
 ## [0.9.0] - 2026-11-04
 
 ### Fixed

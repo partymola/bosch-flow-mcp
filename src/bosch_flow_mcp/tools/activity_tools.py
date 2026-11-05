@@ -134,7 +134,8 @@ async def bosch_get_activities(
     wrist device for HR.
 
     Args:
-        start_date: Window start (YYYY-MM-DD, YYYY-MM, or "30d"). Default 30 days before the end.
+        start_date: Window start (YYYY-MM-DD, YYYY-MM, or "30d"). Default 30 days before the
+            end or today, whichever is earlier.
         end_date: Window end. Default today.
         bike_id: Optional bike UUID filter.
         limit: Optional cap on rides returned (most recent first).

@@ -1,7 +1,7 @@
 """Tests for MCP tool output formatting."""
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -182,6 +182,57 @@ async def test_battery_history_with_only_an_end_date_counts_back_from_it():
         "2026-03-08T08:00:00+00:00",
         "2026-03-15T08:00:00+00:00",
     ]
+
+
+# Past any real date, so an end clamped to either clock drops a row, and far
+# from the fixture's snapshots, which stay outside every window built from it.
+FIXED_TODAY = date(2999, 1, 15)
+
+
+@pytest.fixture
+def fixed_today(monkeypatch):
+    """One today for parse_date and the test, so midnight cannot move either."""
+
+    class Today(date):
+        @classmethod
+        def today(cls):
+            return FIXED_TODAY
+
+    monkeypatch.setattr("bosch_flow_mcp.helpers.date", Today)
+    return FIXED_TODAY
+
+
+async def test_battery_history_with_a_later_end_date_counts_back_from_today(fixed_today):
+    from bosch_flow_mcp import db
+    from bosch_flow_mcp.tools.battery_tools import bosch_get_batteries
+
+    today = f"{fixed_today.isoformat()}T08:00:00+00:00"
+    ahead = f"{(fixed_today + timedelta(days=10)).isoformat()}T08:00:00+00:00"
+    conn = db.get_db()
+    for stamp in (ahead, today):
+        db.save_battery_snapshot(conn, FAKE_BIKE_ID, {"battery_id": FAKE_BATTERY_ID}, stamp)
+    conn.commit()
+    conn.close()
+
+    later = (fixed_today + timedelta(days=60)).isoformat()
+    result = await bosch_get_batteries(latest_only=False, end_date=later)
+    assert [b["captured_at"] for b in json.loads(result)["batteries"]] == [today, ahead]
+
+
+async def test_activities_with_a_later_end_date_count_back_from_today(fixed_today):
+    from bosch_flow_mcp.tools.activity_tools import bosch_get_activities
+
+    day = fixed_today.isoformat()
+    started = datetime.fromisoformat(f"{day}T12:00:00+00:00").timestamp()
+    later = (fixed_today + timedelta(days=60)).isoformat()
+    with patch(
+        "bosch_flow_mcp.tools.activity_tools.api.get",
+        return_value={"data": [{"id": "today", "attributes": {"startTime": int(started)}}]},
+    ):
+        data = json.loads(await bosch_get_activities(end_date=later))
+    start = (fixed_today - timedelta(days=30)).isoformat()
+    assert data["window"] == {"start": start, "end": later}
+    assert [a["id"] for a in data["activities"]] == ["today"]
 
 
 async def test_activities_with_only_an_end_date_count_back_from_it():

@@ -40,6 +40,21 @@ def test_parse_date_counts_a_missing_start_back_from_the_end_date():
     assert parse_date(None, "2026-03-31", default_days=30) == (date(2026, 3, 1), date(2026, 3, 31))
 
 
+def test_parse_date_counts_a_missing_start_back_from_today_when_the_end_is_later(monkeypatch):
+    """From the end alone, the span moves forward with the end, so even an end
+    one day ahead covers fewer of the days before today."""
+
+    class Today(date):
+        @classmethod
+        def today(cls):
+            return date(2026, 3, 20)
+
+    monkeypatch.setattr("bosch_flow_mcp.helpers.date", Today)
+    assert parse_date(None, "2026-04-30", default_days=30) == (date(2026, 2, 18), date(2026, 4, 30))
+    assert parse_date(None, "2026-03-21", default_days=30) == (date(2026, 2, 18), date(2026, 3, 21))
+    assert parse_date(None, "2026-03-20", default_days=30) == (date(2026, 2, 18), date(2026, 3, 20))
+
+
 def test_parse_date_counting_back_stops_at_the_first_date_there_is():
     """`date` raises OverflowError past year 1, which reaches the caller with no
     guidance, for an end date the tools accept."""
@@ -131,9 +146,20 @@ class TestAnInvertedRange:
         monkeypatch.setattr("bosch_flow_mcp.helpers.date", Today)
         assert parse_date(start, end) == (day, day)
 
-    def test_a_range_of_one_day_is_not_inverted_across_midnight(self, monkeypatch):
-        """Read twice, `0d` lands after the end date it defaults to."""
-        days = iter([date(2026, 3, 31), date(2026, 4, 1)])
+    @pytest.mark.parametrize(
+        "start,end,expected",
+        [
+            ("0d", None, (date(2026, 3, 1), date(2026, 3, 1))),
+            ("0d", "0d", (date(2026, 3, 1), date(2026, 3, 1))),
+            (None, "2026-03-02", (date(2026, 1, 30), date(2026, 3, 2))),
+        ],
+    )
+    def test_a_range_of_one_day_is_not_inverted_across_midnight(
+        self, start, end, expected, monkeypatch
+    ):
+        """Read twice, `0d` lands after the end date it defaults to, and a missing
+        start compares the end with another day. A second read raises here."""
+        days = iter([date(2026, 3, 1)])
 
         class Midnight(date):
             @classmethod
@@ -141,7 +167,22 @@ class TestAnInvertedRange:
                 return next(days)
 
         monkeypatch.setattr("bosch_flow_mcp.helpers.date", Midnight)
-        assert parse_date("0d") == (date(2026, 3, 31), date(2026, 3, 31))
+        assert parse_date(start, end, default_days=30) == expected
+
+    def test_a_refusal_names_the_today_it_read(self, monkeypatch):
+        days = iter([date(2026, 3, 1)])
+
+        class Midnight(date):
+            @classmethod
+            def today(cls):
+                return next(days)
+
+        monkeypatch.setattr("bosch_flow_mcp.helpers.date", Midnight)
+        with pytest.raises(InvalidDateError) as exc_info:
+            parse_date("2026-03-02")
+        assert str(exc_info.value) == (
+            "Start date 2026-03-02 is after today (2026-03-01). Use a start on or before that date."
+        )
 
     def test_a_missing_start_is_never_inverted(self):
         assert parse_date(None, "0001-01-01") == (date.min, date.min)
@@ -276,6 +317,9 @@ class TestDateValuesThatPassTheShapeCheck:
             "9999999999d",
             pytest.param("9" * 5000 + "d", id="more-digits-than-int-reads"),
             "last week",
+            pytest.param("2026-03-01\n", id="day-with-a-newline"),
+            pytest.param("2026-03\n", id="month-with-a-newline"),
+            pytest.param("30d\n", id="count-with-a-newline"),
         ],
     )
     def test_it_keeps_the_guidance(self, bad, position):
