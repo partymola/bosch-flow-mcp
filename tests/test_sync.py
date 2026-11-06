@@ -183,6 +183,62 @@ class TestRunSyncClosesTheConnectionItOpens:
         assert closed == opened
 
 
+class TestAConfigDirectoryThatCannotBeSearchedStopsTheSync:
+    """Deliberate: falling back would route a EUDA user to the default client.
+
+    Their Data Act types would be recorded as unavailable. The token file and
+    the config sit in the same directory, so neither can be read to tell the
+    two apart. The error comes out of run_sync before the cache is opened, so
+    nothing is written.
+    """
+
+    @pytest.fixture
+    def unsearchable_config_dir(self, tmp_path, monkeypatch):
+        import os
+        import sys
+
+        import bosch_flow_mcp.auth as auth_module
+
+        if sys.platform == "win32" or os.geteuid() == 0:
+            pytest.skip("needs POSIX directory permissions that bind the current user")
+        locked = tmp_path / "locked-config"
+        locked.mkdir()
+        (locked / "bosch_config.json").write_text("{}")
+        locked.chmod(0)
+        monkeypatch.setattr(auth_module, "BOSCH_CONFIG_PATH", locked / "bosch_config.json")
+        monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", locked / "bosch_tokens.json")
+        try:
+            # Without this the test proves nothing about the directory.
+            with pytest.raises(PermissionError):
+                (locked / "bosch_config.json").exists()
+            yield
+        finally:
+            locked.chmod(0o700)
+
+    def test_run_sync_raises_before_opening_the_cache_and_writes_no_sync_log_rows(
+        self, unsearchable_config_dir, tmp_path, monkeypatch
+    ):
+        import bosch_flow_mcp.db as db_module
+
+        db_path = tmp_path / "test.db"
+        db_module.get_db(db_path).close()
+        monkeypatch.setenv("BOSCH_FLOW_MCP_DB_PATH", str(db_path))
+        get_db = MagicMock(wraps=db_module.get_db)
+
+        with (
+            patch.object(sync_tools.db, "get_db", get_db),
+            patch.object(sync_tools.api, "get", side_effect=_mock_api_get),
+            pytest.raises(PermissionError),
+        ):
+            run_sync(["bikes", "service"])
+
+        get_db.assert_not_called()
+        conn = db_module.get_db(db_path)
+        rows = conn.execute("SELECT COUNT(*) FROM sync_log").fetchone()[0]
+        conn.close()
+        assert rows == 0
+
+
 def test_auto_sync_if_stale_skips_if_synced_today(tmp_path, monkeypatch):
     """auto_sync_if_stale does not call run_sync if already synced today."""
     import bosch_flow_mcp.db as db_module
