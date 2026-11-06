@@ -42,6 +42,7 @@ from .config import (
     CONFIG_DIR,
     REDIRECT_URI,
     SCOPE,
+    path_exists,
 )
 
 logger = logging.getLogger(__name__)
@@ -175,11 +176,10 @@ def _load_json(path) -> dict:
     """Read a credential file as a dict, or say why the credentials are unusable.
 
     Classified here rather than left to the caller: a file that is absent,
-    unreadable or not a JSON object means there are no usable credentials,
-    which is a refusal - unlike a transport failure it will not clear on its
-    own, and the user does have to re-authorise. A refresh already in flight
-    reads the file through `_reread_tokens` instead, where an unreadable file
-    is not a verdict on the credentials the refresh just sent.
+    cannot be opened or is not a JSON object holds no usable credentials, which
+    is a refusal. A refresh already in flight reads the file through `_reread_tokens` instead,
+    where an unreadable file is not a verdict on the credentials the refresh
+    just sent.
     """
     try:
         data = json.loads(path.read_text())
@@ -203,7 +203,7 @@ def _named_client(data: dict) -> str:
 
 def _get_client_id() -> str:
     """Return the client_id to use for auth. EUDA config takes priority."""
-    if BOSCH_CONFIG_PATH.exists():
+    if path_exists(BOSCH_CONFIG_PATH):
         try:
             cfg = _load_json(BOSCH_CONFIG_PATH)
         except RuntimeError:
@@ -219,7 +219,7 @@ def _is_euda() -> bool:
     sync requests, use token_is_euda() instead - it reflects the token actually in
     use, not just what config exists.
     """
-    if BOSCH_CONFIG_PATH.exists():
+    if path_exists(BOSCH_CONFIG_PATH):
         # Deliberately raises. The only caller is the interactive auth command,
         # where a malformed config should stop the user rather than send them
         # through a full browser login that quietly yields the wrong client and
@@ -245,10 +245,12 @@ def current_client_id() -> str:
     out-of-band re-auth (e.g. switching from a euda client to one-bike-app) without
     needing a server restart. Falls back to the configured/default client when no
     token exists yet (CLI sync before auth) or a legacy token lacks the field.
-    Never raises and never returns None.
+    Never returns None. Raises, deliberately, the OSError of checking whether
+    the token file or the config exists, such as a config directory that cannot
+    be searched or a symlink loop. AGENTS.md says why.
     """
     try:
-        if BOSCH_TOKENS_PATH.exists():
+        if path_exists(BOSCH_TOKENS_PATH):
             return _named_client(_load_json(BOSCH_TOKENS_PATH)) or _get_client_id()
         return _get_client_id()
     except RuntimeError:
@@ -344,7 +346,7 @@ def _current_tokens() -> dict:
             _save(held, file_token)
             return held
         _unsaved = None
-    if not BOSCH_TOKENS_PATH.exists():
+    if not path_exists(BOSCH_TOKENS_PATH):
         raise TokenRefused("Bosch not configured. Run: bosch-flow-mcp auth")
     return _load_json(BOSCH_TOKENS_PATH)
 

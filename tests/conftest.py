@@ -5,11 +5,14 @@ frame numbers, or personal information.
 """
 
 import json
+import os
+import sys
 import urllib.request
 
 import pytest
 
 from bosch_flow_mcp import db
+from bosch_flow_mcp.config import path_exists
 
 # Fictional test data - no real values
 FAKE_BIKE_ID = "00000000-0000-0000-0000-000000000001"
@@ -141,6 +144,41 @@ def token_as(tmp_path, monkeypatch):
         return path
 
     return _set
+
+
+# Mode 0 does not bind root, and Windows ignores the mode bits.
+needs_posix_permissions = pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="needs POSIX directory permissions that bind the current user",
+)
+
+
+@pytest.fixture
+def unsearchable_config_dir(tmp_path, monkeypatch):
+    """A config directory holding a token file and a config, at mode 0.
+
+    Every module that binds a config path by value points into it. A test using
+    it carries `needs_posix_permissions`.
+    """
+    import bosch_flow_mcp.auth as auth_module
+
+    locked = tmp_path / "locked-config"
+    locked.mkdir()
+    tokens = locked / "bosch_tokens.json"
+    tokens.write_text(json.dumps({"access_token": "", "refresh_token": "fake", "expiry": 0}))
+    (locked / "bosch_config.json").write_text("{}")
+    locked.chmod(0)
+    monkeypatch.setattr(auth_module, "CONFIG_DIR", locked)
+    monkeypatch.setattr(auth_module, "BOSCH_CONFIG_PATH", locked / "bosch_config.json")
+    monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", tokens)
+    monkeypatch.setattr("bosch_flow_mcp.helpers.BOSCH_TOKENS_PATH", tokens)
+    try:
+        # Without this the test proves nothing about the directory.
+        with pytest.raises(PermissionError):
+            path_exists(tokens)
+        yield locked
+    finally:
+        locked.chmod(0o700)
 
 
 @pytest.fixture

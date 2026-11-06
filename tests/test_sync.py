@@ -9,7 +9,7 @@ import pytest
 
 from bosch_flow_mcp.tools import sync_tools
 from bosch_flow_mcp.tools.sync_tools import auto_sync_if_stale, run_sync
-from tests.conftest import FAKE_BIKE_ID
+from tests.conftest import FAKE_BIKE_ID, needs_posix_permissions
 
 # Fake API responses using fictional data
 FAKE_BIKES_RESPONSE = {
@@ -186,35 +186,12 @@ class TestRunSyncClosesTheConnectionItOpens:
 class TestAConfigDirectoryThatCannotBeSearchedStopsTheSync:
     """Deliberate: falling back would route a EUDA user to the default client.
 
-    Their Data Act types would be recorded as unavailable. The token file and
-    the config sit in the same directory, so neither can be read to tell the
-    two apart. The error comes out of run_sync before the cache is opened, so
-    nothing is written.
+    Their Data Act types would be recorded as unavailable. Without the token
+    file nothing tells the two apart. The error comes out of run_sync before
+    the cache is opened, so nothing is written.
     """
 
-    @pytest.fixture
-    def unsearchable_config_dir(self, tmp_path, monkeypatch):
-        import os
-        import sys
-
-        import bosch_flow_mcp.auth as auth_module
-
-        if sys.platform == "win32" or os.geteuid() == 0:
-            pytest.skip("needs POSIX directory permissions that bind the current user")
-        locked = tmp_path / "locked-config"
-        locked.mkdir()
-        (locked / "bosch_config.json").write_text("{}")
-        locked.chmod(0)
-        monkeypatch.setattr(auth_module, "BOSCH_CONFIG_PATH", locked / "bosch_config.json")
-        monkeypatch.setattr(auth_module, "BOSCH_TOKENS_PATH", locked / "bosch_tokens.json")
-        try:
-            # Without this the test proves nothing about the directory.
-            with pytest.raises(PermissionError):
-                (locked / "bosch_config.json").exists()
-            yield
-        finally:
-            locked.chmod(0o700)
-
+    @needs_posix_permissions
     def test_run_sync_raises_before_opening_the_cache_and_writes_no_sync_log_rows(
         self, unsearchable_config_dir, tmp_path, monkeypatch
     ):

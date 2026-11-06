@@ -21,6 +21,20 @@ BOSCH_TOKENS_PATH = CONFIG_DIR / "bosch_tokens.json"
 # Optional config override (custom EUDA client_id / client_secret for Data Act API)
 BOSCH_CONFIG_PATH = CONFIG_DIR / "bosch_config.json"
 
+
+def path_exists(path: Path) -> bool:
+    """Whether `path` exists, raising any OSError other than its absence.
+
+    Not `Path.exists`, which answers False for a symlink loop, and from Python
+    3.14 for a path in a directory that cannot be searched.
+    """
+    try:
+        path.stat()
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    return True
+
+
 # --- OAuth (Bosch Keycloak) ---
 BOSCH_AUTH_URL = "https://p9.authz.bosch.com/auth/realms/obc/protocol/openid-connect/auth"
 BOSCH_TOKEN_URL = "https://p9.authz.bosch.com/auth/realms/obc/protocol/openid-connect/token"
