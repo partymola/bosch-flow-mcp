@@ -2,11 +2,13 @@
 
 import asyncio
 import json
+import sys
 from datetime import date, timedelta
 
 import pytest
 
 from bosch_flow_mcp.helpers import EARLIEST_DATE, InvalidDateError, format_response, parse_date
+from tests.conftest import needs_posix_permissions
 
 
 def test_format_response_dict():
@@ -219,11 +221,10 @@ class TestTheAuthGate:
 
         from bosch_flow_mcp import helpers as helpers_module
 
-        class _Path:
-            def exists(self):
-                return tokens_exist
-
-        monkeypatch.setattr(helpers_module, "BOSCH_TOKENS_PATH", _Path())
+        # conftest points the gate at a token file that exists.
+        if not tokens_exist:
+            absent = helpers_module.BOSCH_TOKENS_PATH.with_name("_absent.json")
+            monkeypatch.setattr(helpers_module, "BOSCH_TOKENS_PATH", absent)
 
         @helpers_module.require_auth
         async def tool():
@@ -234,8 +235,27 @@ class TestTheAuthGate:
     def test_it_refuses_when_there_are_no_credentials(self, monkeypatch):
         called = []
         result = self._tool(monkeypatch, False, lambda: called.append(1) or "{}")
-        assert "Run: bosch-flow-mcp auth" in result["error"]
+        assert result == {"error": "Bosch not configured. Run: bosch-flow-mcp auth"}
         assert called == []
+
+    @pytest.mark.parametrize(
+        "where", ["no-config-dir/bosch_tokens.json", "a-file/bosch_tokens.json"]
+    )
+    def test_a_config_directory_that_is_not_there_is_no_credentials(
+        self, where, tmp_path, monkeypatch
+    ):
+        from bosch_flow_mcp import helpers as helpers_module
+
+        (tmp_path / "a-file").write_text("")
+        monkeypatch.setattr(helpers_module, "BOSCH_TOKENS_PATH", tmp_path / where)
+
+        @helpers_module.require_auth
+        async def tool():
+            return "{}"
+
+        assert json.loads(asyncio.run(tool())) == {
+            "error": "Bosch not configured. Run: bosch-flow-mcp auth"
+        }
 
     def test_a_rate_limit_becomes_a_tool_result(self, monkeypatch):
         from bosch_flow_mcp import api
@@ -283,6 +303,67 @@ class TestTheAuthGate:
         result = self._tool(monkeypatch, True, boom)
         assert "YYYY-MM-DD" in result["error"]
         assert "last week" in result["error"]
+
+
+class TestAConfigDirectoryThatCannotBeSearched:
+    """The gate answers with fixed text rather than letting the OSError escape.
+
+    Escaped, it reaches the client as `mcp`'s masked "Error executing tool".
+    The text names the error type and no path, since an OSError's text holds
+    absolute paths. It does not send the user to auth.
+    """
+
+    EXPECTED = {"error": "The token file or the config directory cannot be read (PermissionError)."}
+
+    @staticmethod
+    def _gated_call():
+        from bosch_flow_mcp import helpers as helpers_module
+
+        called = []
+
+        @helpers_module.require_auth
+        async def tool():
+            called.append(1)
+            return "{}"
+
+        raw = asyncio.run(tool())
+        assert called == []
+        return raw
+
+    @needs_posix_permissions
+    def test_a_gated_tool_answers_naming_no_path(self, unsearchable_config_dir):
+        raw = self._gated_call()
+        assert json.loads(raw) == self.EXPECTED
+        assert str(unsearchable_config_dir) not in raw
+        assert "/" not in raw
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+    def test_a_token_file_that_is_a_symlink_loop_is_answered_the_same_way(
+        self, tmp_path, monkeypatch
+    ):
+        loop = tmp_path / "bosch_tokens.json"
+        loop.symlink_to(loop)
+        monkeypatch.setattr("bosch_flow_mcp.helpers.BOSCH_TOKENS_PATH", loop)
+        raw = self._gated_call()
+        assert json.loads(raw) == {
+            "error": "The token file or the config directory cannot be read (OSError)."
+        }
+        assert "/" not in raw
+
+    @needs_posix_permissions
+    def test_bosch_sync_answers_through_the_server(self, unsearchable_config_dir):
+        """Through `mcp.call_tool`, so the layer that masks an escaped exception is in the path."""
+        from bosch_flow_mcp.mcp_instance import mcp
+        from bosch_flow_mcp.tools import sync_tools  # noqa: F401
+
+        try:
+            result = asyncio.run(mcp.call_tool("bosch_sync", {}))
+        except Exception as e:
+            pytest.fail(f"the call raised {type(e).__name__}: {e}")
+        raw = "".join(c.text for c in result.content if getattr(c, "text", None))
+        assert json.loads(raw) == self.EXPECTED
+        assert str(unsearchable_config_dir) not in raw
+        assert "/" not in raw
 
 
 def test_every_tool_is_gated():

@@ -9,7 +9,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from . import api, db
-from .config import BOSCH_TOKENS_PATH
+from .config import BOSCH_TOKENS_PATH, path_exists
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +139,18 @@ def require_auth(func):
 
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
-        if not BOSCH_TOKENS_PATH.exists():
+        try:
+            configured = path_exists(BOSCH_TOKENS_PATH)
+        except OSError as e:
+            return json.dumps(
+                {
+                    "error": (
+                        "The token file or the config directory cannot be read "
+                        f"({type(e).__name__})."
+                    )
+                }
+            )
+        if not configured:
             return json.dumps(
                 {
                     "error": "Bosch not configured. Run: bosch-flow-mcp auth",

@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - On Python 3.14 and later, a config directory that cannot be searched stops a sync, as it already did on 3.13. It routed an EU Data Act sign-in to the standard client, which recorded the Data Act types as unavailable. A token file or config that is a symlink loop now stops a sync too, on every version, rather than routing as if it were not there.
 - On Python 3.14 and later, a token refresh in a config directory that cannot be searched is a network error, as it already was on 3.13. It said Bosch was not configured and to run `auth`. `bosch-flow-mcp auth` there stops at once with the error type, rather than opening a browser sign-in. On every version, a refresh from a token file that is a symlink loop is now a network error rather than telling you to run `auth`, and `auth` with a config that is a symlink loop now stops at once.
+- A tool call made in a config directory that cannot be searched, or with a token file that is a symlink loop, says the token file or the config directory cannot be read, naming the error type and no path. In such a directory it failed with `Error executing tool <name>` on Python 3.13, and on later versions it said Bosch was not configured and to run `auth`, which does not help there. With a token file that is a symlink loop it said Bosch was not configured on every version.
 
 ## [0.9.2] - 2026-11-06
 
