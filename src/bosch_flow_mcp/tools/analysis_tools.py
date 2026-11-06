@@ -40,7 +40,7 @@ _PERIOD_KEY_FNS = {
 TrendPeriod = Literal[*_PERIOD_KEY_FNS]
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @require_auth
 async def bosch_battery_trends(
     bike_id: str | None = None,

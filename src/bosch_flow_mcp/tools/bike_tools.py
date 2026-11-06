@@ -8,7 +8,7 @@ from ..mcp_instance import mcp
 from .sync_tools import auto_sync_if_stale
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @require_auth
 async def bosch_get_bikes() -> str:
     """List all Bosch eBikes registered to your Flow account.
@@ -33,7 +33,7 @@ async def bosch_get_bikes() -> str:
     return format_response({"bikes": bikes, "count": len(bikes), **note})
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @require_auth
 async def bosch_get_bike(bike_id: str) -> str:
     """Get detailed profile for a single Bosch eBike.

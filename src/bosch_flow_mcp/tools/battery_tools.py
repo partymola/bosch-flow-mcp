@@ -9,7 +9,7 @@ from ..mcp_instance import mcp
 from .sync_tools import auto_sync_if_stale
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @require_auth
 async def bosch_get_batteries(
     bike_id: str | None = None,
@@ -49,7 +49,7 @@ async def bosch_get_batteries(
     return format_response({"batteries": snapshots, "count": len(snapshots), **note})
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @require_auth
 async def bosch_get_soc(bike_id: str) -> str:
     """Get live state-of-charge from the Bosch ConnectModule.
@@ -106,7 +106,7 @@ async def bosch_get_soc(bike_id: str) -> str:
     return format_response(soc)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @require_auth
 async def bosch_get_capacity(
     part_number: str | None = None,

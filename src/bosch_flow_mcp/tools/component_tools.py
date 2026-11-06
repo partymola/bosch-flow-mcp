@@ -8,7 +8,7 @@ from ..mcp_instance import mcp
 from .sync_tools import auto_sync_if_stale
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @require_auth
 async def bosch_get_components(
     bike_id: str | None = None,

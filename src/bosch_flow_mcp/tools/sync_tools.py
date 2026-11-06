@@ -567,7 +567,7 @@ def auto_sync_if_stale(data_type: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @require_auth
 async def bosch_sync(data_types: str = "all") -> str:
     """Sync Bosch eBike data to the local cache.

@@ -116,7 +116,7 @@ def _fetch_all_summaries(max_pages: int = 25) -> tuple[list[dict], bool]:
     return items, pages > max_pages
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @require_auth
 async def bosch_get_activities(
     start_date: str | None = None,
@@ -181,7 +181,7 @@ async def bosch_get_activities(
     return format_response(result)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @require_auth
 async def bosch_get_activity_detail(activity_id: str) -> str:
     """Get the per-point track for one ride (GPS + speed/elevation/cadence/power).

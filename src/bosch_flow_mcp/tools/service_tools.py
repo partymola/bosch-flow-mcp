@@ -8,7 +8,7 @@ from ..mcp_instance import mcp
 from .sync_tools import auto_sync_if_stale
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @require_auth
 async def bosch_get_service_records(
     bike_id: str | None = None,
@@ -48,7 +48,7 @@ async def bosch_get_service_records(
     return format_response({"service_records": records, "count": len(records), **note})
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @require_auth
 async def bosch_get_software_updates(
     bike_id: str | None = None,
